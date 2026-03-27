@@ -3,15 +3,21 @@
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, Vec};
 
 #[contracttype]
-#[derive(Clone, PartialEq)]
-pub enum JobStatus { Open, InProgress, DeliverableSubmitted, Completed, Disputed }
+#[derive(Clone, Debug, PartialEq)]
+pub enum JobStatus {
+    Open,
+    InProgress,
+    DeliverableSubmitted,
+    Completed,
+    Disputed,
+}
 
 #[contracttype]
 #[derive(Clone)]
 pub struct JobRecord {
     pub client: Address,
     pub freelancer: Option<Address>,
-    pub metadata_hash: Bytes, // IPFS CID
+    pub metadata_hash: Bytes,
     pub budget_stroops: i128,
     pub status: JobStatus,
 }
@@ -24,7 +30,11 @@ pub struct BidRecord {
 }
 
 #[contracttype]
-pub enum DataKey { Job(u64), Bids(u64), Deliverable(u64) }
+pub enum DataKey {
+    Job(u64),
+    Bids(u64),
+    Deliverable(u64),
+}
 
 #[contract]
 pub struct JobRegistryContract;
@@ -32,21 +42,261 @@ pub struct JobRegistryContract;
 #[contractimpl]
 impl JobRegistryContract {
     /// Client posts a job. `metadata_hash` = IPFS CID bytes.
-    pub fn post_job(_env: Env, _job_id: u64, _client: Address, _hash: Bytes, _budget: i128) { todo!() }
+    pub fn post_job(env: Env, job_id: u64, client: Address, hash: Bytes, budget: i128) {
+        client.require_auth();
+
+        let key = DataKey::Job(job_id);
+        if env.storage().persistent().has(&key) {
+            panic!("job already exists");
+        }
+
+        let job = JobRecord {
+            client,
+            freelancer: None,
+            metadata_hash: hash,
+            budget_stroops: budget,
+            status: JobStatus::Open,
+        };
+        env.storage().persistent().set(&key, &job);
+
+        let bids: Vec<BidRecord> = Vec::new(&env);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Bids(job_id), &bids);
+    }
 
     /// Freelancer submits a bid.
-    pub fn submit_bid(_env: Env, _job_id: u64, _freelancer: Address, _proposal_hash: Bytes) { todo!() }
+    pub fn submit_bid(env: Env, job_id: u64, freelancer: Address, proposal_hash: Bytes) {
+        freelancer.require_auth();
+
+        let key = DataKey::Job(job_id);
+        let job: JobRecord = env.storage().persistent().get(&key).expect("job not found");
+        assert!(job.status == JobStatus::Open, "job not open for bids");
+
+        let bids_key = DataKey::Bids(job_id);
+        let mut bids: Vec<BidRecord> = env
+            .storage()
+            .persistent()
+            .get(&bids_key)
+            .unwrap_or(Vec::new(&env));
+
+        bids.push_back(BidRecord {
+            freelancer,
+            proposal_hash,
+        });
+        env.storage().persistent().set(&bids_key, &bids);
+    }
 
     /// Client accepts a bid, locking in the freelancer.
-    pub fn accept_bid(_env: Env, _job_id: u64, _client: Address, _freelancer: Address) { todo!() }
+    pub fn accept_bid(env: Env, job_id: u64, client: Address, freelancer: Address) {
+        client.require_auth();
+
+        let key = DataKey::Job(job_id);
+        let mut job: JobRecord = env.storage().persistent().get(&key).expect("job not found");
+
+        assert!(job.status == JobStatus::Open, "job not open");
+        assert!(client == job.client, "only client can accept bids");
+
+        job.freelancer = Some(freelancer);
+        job.status = JobStatus::InProgress;
+        env.storage().persistent().set(&key, &job);
+    }
 
     /// Freelancer submits deliverable IPFS hash.
-    pub fn submit_deliverable(_env: Env, _job_id: u64, _freelancer: Address, _hash: Bytes) { todo!() }
+    pub fn submit_deliverable(env: Env, job_id: u64, freelancer: Address, hash: Bytes) {
+        freelancer.require_auth();
+
+        let key = DataKey::Job(job_id);
+        let mut job: JobRecord = env.storage().persistent().get(&key).expect("job not found");
+
+        assert!(job.status == JobStatus::InProgress, "job not in progress");
+        assert!(
+            job.freelancer == Some(freelancer.clone()),
+            "not the assigned freelancer"
+        );
+
+        job.status = JobStatus::DeliverableSubmitted;
+        env.storage().persistent().set(&key, &job);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Deliverable(job_id), &hash);
+    }
 
     /// Mark job disputed (called by escrow via cross-contract invoke).
-    pub fn mark_disputed(_env: Env, _job_id: u64) { todo!() }
+    pub fn mark_disputed(env: Env, job_id: u64) {
+        let key = DataKey::Job(job_id);
+        let mut job: JobRecord = env.storage().persistent().get(&key).expect("job not found");
 
-    pub fn get_job(_env: Env, _job_id: u64) -> JobRecord { todo!() }
-    pub fn get_bids(_env: Env, _job_id: u64) -> Vec<BidRecord> { todo!() }
-    pub fn get_deliverable(_env: Env, _job_id: u64) -> Bytes { todo!() }
+        assert!(
+            job.status == JobStatus::InProgress || job.status == JobStatus::DeliverableSubmitted,
+            "invalid state for dispute"
+        );
+
+        job.status = JobStatus::Disputed;
+        env.storage().persistent().set(&key, &job);
+    }
+
+    pub fn get_job(env: Env, job_id: u64) -> JobRecord {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Job(job_id))
+            .expect("job not found")
+    }
+
+    pub fn get_bids(env: Env, job_id: u64) -> Vec<BidRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Bids(job_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    pub fn get_deliverable(env: Env, job_id: u64) -> Bytes {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Deliverable(job_id))
+            .expect("no deliverable")
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, Bytes, Env};
+
+    #[test]
+    fn test_full_lifecycle() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+
+        let contract_id = env.register_contract(None, JobRegistryContract);
+        let cc = JobRegistryContractClient::new(&env, &contract_id);
+
+        let hash = Bytes::from_slice(&env, b"QmSomeIPFSHash");
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+
+        let job = cc.get_job(&1u64);
+        assert_eq!(job.status, JobStatus::Open);
+        assert_eq!(job.freelancer, None);
+
+        let proposal = Bytes::from_slice(&env, b"QmProposalHash");
+        cc.submit_bid(&1u64, &freelancer, &proposal);
+
+        let bids = cc.get_bids(&1u64);
+        assert_eq!(bids.len(), 1);
+
+        cc.accept_bid(&1u64, &client, &freelancer);
+        let job = cc.get_job(&1u64);
+        assert_eq!(job.status, JobStatus::InProgress);
+        assert_eq!(job.freelancer, Some(freelancer.clone()));
+
+        let deliverable = Bytes::from_slice(&env, b"QmDeliverableHash");
+        cc.submit_deliverable(&1u64, &freelancer, &deliverable);
+
+        let job = cc.get_job(&1u64);
+        assert_eq!(job.status, JobStatus::DeliverableSubmitted);
+
+        let d = cc.get_deliverable(&1u64);
+        assert_eq!(d, deliverable);
+    }
+
+    #[test]
+    #[should_panic(expected = "job not open for bids")]
+    fn test_bid_on_non_open_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let client = Address::generate(&env);
+        let freelancer1 = Address::generate(&env);
+        let freelancer2 = Address::generate(&env);
+
+        let contract_id = env.register_contract(None, JobRegistryContract);
+        let cc = JobRegistryContractClient::new(&env, &contract_id);
+
+        let hash = Bytes::from_slice(&env, b"QmHash");
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+        cc.accept_bid(&1u64, &client, &freelancer1);
+
+        let proposal = Bytes::from_slice(&env, b"QmLate");
+        cc.submit_bid(&1u64, &freelancer2, &proposal);
+    }
+
+    #[test]
+    fn test_mark_disputed_from_in_progress() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+
+        let contract_id = env.register_contract(None, JobRegistryContract);
+        let cc = JobRegistryContractClient::new(&env, &contract_id);
+
+        let hash = Bytes::from_slice(&env, b"QmHash");
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+        cc.accept_bid(&1u64, &client, &freelancer);
+
+        cc.mark_disputed(&1u64);
+        let job = cc.get_job(&1u64);
+        assert_eq!(job.status, JobStatus::Disputed);
+    }
+
+    #[test]
+    fn test_mark_disputed_from_deliverable_submitted() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+
+        let contract_id = env.register_contract(None, JobRegistryContract);
+        let cc = JobRegistryContractClient::new(&env, &contract_id);
+
+        let hash = Bytes::from_slice(&env, b"QmHash");
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+        cc.accept_bid(&1u64, &client, &freelancer);
+
+        let deliverable = Bytes::from_slice(&env, b"QmDeliverable");
+        cc.submit_deliverable(&1u64, &freelancer, &deliverable);
+
+        cc.mark_disputed(&1u64);
+        let job = cc.get_job(&1u64);
+        assert_eq!(job.status, JobStatus::Disputed);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid state for dispute")]
+    fn test_mark_disputed_from_open_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let client = Address::generate(&env);
+
+        let contract_id = env.register_contract(None, JobRegistryContract);
+        let cc = JobRegistryContractClient::new(&env, &contract_id);
+
+        let hash = Bytes::from_slice(&env, b"QmHash");
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+
+        cc.mark_disputed(&1u64);
+    }
+
+    #[test]
+    #[should_panic(expected = "job already exists")]
+    fn test_duplicate_job_id() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let client = Address::generate(&env);
+
+        let contract_id = env.register_contract(None, JobRegistryContract);
+        let cc = JobRegistryContractClient::new(&env, &contract_id);
+
+        let hash = Bytes::from_slice(&env, b"QmHash");
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+    }
 }

@@ -9,7 +9,7 @@ use crate::{
     db::AppState,
     error::{AppError, Result},
     models::{Dispute, OpenDisputeRequest},
-    routes::evidence,
+    routes::{appeals, evidence},
 };
 
 pub fn router() -> Router<AppState> {
@@ -17,6 +17,7 @@ pub fn router() -> Router<AppState> {
         .route("/:id", get(get_dispute))
         .route("/:id/evidence", post(evidence::submit_evidence))
         .route("/:id/verdict", get(crate::routes::verdicts::get_verdict))
+        .route("/:id/appeal", post(appeals::create_appeal))
 }
 
 /// Open a dispute from within the job routes (/jobs/:id/dispute)
