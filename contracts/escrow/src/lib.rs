@@ -135,7 +135,6 @@ impl EscrowContract {
         job.client.require_auth();
         assert!(job.status == EscrowStatus::Setup, "already funded or invalid state");
         assert!(amount > 0, "amount must be > 0");
-        assert!(job.milestones.len() > 0, "no milestones defined");
 
         let mut total_milestones_amount = 0i128;
         for m in job.milestones.iter() {
