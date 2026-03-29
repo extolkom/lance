@@ -80,7 +80,7 @@ test("full gig lifecycle: post, bid, accept, fund, deliver, release", async ({ p
   // Should redirect to job details page
   await expect(page).toHaveURL(`/jobs/${mockJobId}`);
   await expect(page.getByRole("heading", { name: "Build a Soroban Smart Contract" })).toBeVisible();
-  await expect(page.getByText(/OPEN/)).toBeVisible();
+  await expect(page.getByText(/OPEN/i)).toBeVisible();
 
   // 2. Freelancer submits a bid
   await page.fill("#bid-proposal", "I have extensive experience with Soroban and Rust. I can finish this in 3 days.");
@@ -127,5 +127,5 @@ test("full gig lifecycle: post, bid, accept, fund, deliver, release", async ({ p
   // 5. Verify transition back to Job details with FUNDED status
   await page.click("button:has-text('Go to Job')");
   await expect(page).toHaveURL(`/jobs/${mockJobId}`);
-  await expect(page.getByText(/FUNDED/)).toBeVisible();
+  await expect(page.getByText(/FUNDED/i)).toBeVisible();
 });
