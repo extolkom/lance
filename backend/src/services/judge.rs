@@ -153,7 +153,6 @@ impl JudgeService {
         let mut bundled_evidence = Vec::new();
         for ev in evidence_list {
             let file_content = if let Some(ref cid) = ev.file_hash {
-                // Placeholder for IPFS fetching logic
                 Some(self.fetch_ipfs_text(cid).await.unwrap_or_else(|_| "Error fetching IPFS content".to_string()))
             } else {
                 None
@@ -183,8 +182,6 @@ impl JudgeService {
 
     /// Placeholder for fetching text content from IPFS.
     pub async fn fetch_ipfs_text(&self, cid: &str) -> Result<String> {
-        // In a real scenario, this would call an IPFS gateway or a local IPFS node.
-        // For now, we stub it as per the "Integration Foundation" requirements.
         tracing::debug!("Fetching IPFS content for CID: {}", cid);
         Ok(format!("[Stub content for IPFS CID: {}]", cid))
     }
@@ -239,7 +236,6 @@ mod tests {
         let mut server = Server::new_async().await;
         let url = server.url();
 
-        // Fail twice, succeed once
         let mock_fail = server
             .mock("POST", "/analyze")
             .with_status(500)
