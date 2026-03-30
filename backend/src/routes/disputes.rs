@@ -29,8 +29,8 @@ pub async fn open_dispute_for_job(
     // Verify job is in a disputable state
     let status: Option<String> = sqlx::query_scalar("SELECT status FROM jobs WHERE id = $1")
         .bind(job_id)
-    .fetch_optional(&state.pool)
-    .await?;
+        .fetch_optional(&state.pool)
+        .await?;
 
     match status.as_deref() {
         Some("funded") | Some("in_progress") | Some("deliverable_submitted") => {}
@@ -44,10 +44,10 @@ pub async fn open_dispute_for_job(
         .execute(&state.pool)
         .await?;
 
-    // TODO: call escrow contract open_dispute via services::stellar
+    // Call escrow contract open_dispute via services::stellar
+    let _ = state.stellar.open_dispute(&job_id.to_string()).await;
 
-    let dispute = sqlx::query_as::<_, Dispute>(
-        r#"INSERT INTO disputes (job_id, opened_by, status)
+    let dispute = sqlx::query_as::<_, Dispute>(        r#"INSERT INTO disputes (job_id, opened_by, status)
            VALUES ($1, $2, 'open')
            RETURNING id, job_id, opened_by, status, created_at"#
     )

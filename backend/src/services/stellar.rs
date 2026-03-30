@@ -489,7 +489,8 @@ fn base32_encode(data: &[u8]) -> String {
         out.push(ALPHABET[((bits << (5 - bit_count)) & 0x1F) as usize] as char);
     }
     // Pad to multiple of 8
-    while !out.len().is_multiple_of(8) {
+    #[allow(clippy::manual_is_multiple_of)]
+    while out.len() % 8 != 0 {
         out.push('=');
     }
     out

@@ -150,5 +150,22 @@ async fn mark_job_funded(
     .fetch_one(&state.pool)
     .await?;
 
+    // Create milestone records in 'milestones' table
+    if job.milestones > 0 {
+        let amount_per = job.budget_usdc / (job.milestones as i64);
+        for i in 0..job.milestones {
+            sqlx::query(
+                r#"INSERT INTO milestones (job_id, index, title, amount_usdc, status)
+                   VALUES ($1, $2, $3, $4, 'pending')"#,
+            )
+            .bind(job.id)
+            .bind(i)
+            .bind(format!("Milestone {}", i + 1))
+            .bind(amount_per)
+            .execute(&state.pool)
+            .await?;
+        }
+    }
+    
     Ok(Json(job))
 }
