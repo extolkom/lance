@@ -72,11 +72,11 @@ export default function JobDetailsPage() {
     setBusyAction(`accept-${bidId}`);
 
     try {
-      await api.bids.accept(id, bidId, {
+      const acceptedJob = await api.bids.accept(id, bidId, {
         client_address: workspace.job.client_address,
       });
-      await workspace.refresh();
-      router.push(`/jobs/${id}/fund`);
+      void workspace.refresh();
+      router.push(`/jobs/${acceptedJob.id}/fund`);
     } catch {
       alert("Failed to accept bid");
     } finally {

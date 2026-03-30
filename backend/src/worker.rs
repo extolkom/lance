@@ -56,7 +56,6 @@ async fn process_dispute(
         .execute(pool)
         .await?;
 
-
     #[derive(sqlx::FromRow)]
     struct JobRow {
         on_chain_job_id: Option<i64>,
@@ -111,9 +110,9 @@ async fn process_dispute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::judge::{CaseFile, JobContext};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-    use crate::services::judge::{CaseFile, JobContext};
 
     #[tokio::test]
     async fn test_judge_service_mocked() {
