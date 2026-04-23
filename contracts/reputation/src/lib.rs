@@ -462,18 +462,15 @@ mod test {
     #[contractimpl]
     impl MockJobRegistry {
         pub fn set_job(env: Env, job_id: u64, job: JobRecord) {
-            env.storage()
-                .persistent()
-                .set(&MockKey::Job(job_id), &job);
+            env.storage().persistent().set(&MockKey::Job(job_id), &job);
         }
 
         pub fn get_job(env: Env, _job_id: u64) -> Result<JobRecord, soroban_sdk::Error> {
-            Ok(
-                env.storage()
-                    .persistent()
-                    .get(&MockKey::Job(_job_id))
-                    .expect("mock job missing"),
-            )
+            Ok(env
+                .storage()
+                .persistent()
+                .get(&MockKey::Job(_job_id))
+                .expect("mock job missing"))
         }
     }
 
