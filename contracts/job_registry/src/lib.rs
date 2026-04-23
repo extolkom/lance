@@ -115,7 +115,13 @@ impl JobRegistryContract {
             env.storage().instance().set(&DataKey::NextJobId, &updated);
         }
 
-        log!(&env, "post_job: id {} client {} budget {}", job_id, client, budget);
+        log!(
+            &env,
+            "post_job: id {} client {} budget {}",
+            job_id,
+            client,
+            budget
+        );
         env.events()
             .publish((symbol_short!("jobpost"), job_id), (client, budget));
     }
@@ -135,7 +141,13 @@ impl JobRegistryContract {
             .unwrap_or_else(|| panic_with_error!(&env, JobRegistryError::Overflow));
         env.storage().instance().set(&DataKey::NextJobId, &next);
 
-        log!(&env, "post_job_auto: id {} client {} budget {}", job_id, client, budget);
+        log!(
+            &env,
+            "post_job_auto: id {} client {} budget {}",
+            job_id,
+            client,
+            budget
+        );
         env.events()
             .publish((symbol_short!("jobauto"), job_id), (client, budget));
 
@@ -223,7 +235,13 @@ impl JobRegistryContract {
         job.status = JobStatus::InProgress;
         env.storage().persistent().set(&key, &job);
 
-        log!(&env, "accept_bid: id {} client {} freelancer {}", job_id, client, freelancer);
+        log!(
+            &env,
+            "accept_bid: id {} client {} freelancer {}",
+            job_id,
+            client,
+            freelancer
+        );
         env.events()
             .publish((symbol_short!("accept"), job_id), freelancer);
     }
@@ -254,7 +272,12 @@ impl JobRegistryContract {
             .persistent()
             .set(&DataKey::Deliverable(job_id), &hash);
 
-        log!(&env, "submit_deliverable: id {} freelancer {}", job_id, freelancer);
+        log!(
+            &env,
+            "submit_deliverable: id {} freelancer {}",
+            job_id,
+            freelancer
+        );
         env.events()
             .publish((symbol_short!("deliver"), job_id), freelancer);
     }
