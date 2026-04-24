@@ -18,7 +18,7 @@ import { Stars } from "@/components/stars";
 import { JobDetailsSkeleton } from "@/components/ui/skeleton";
 import { useLiveJobWorkspace } from "@/hooks/use-live-job-workspace";
 import { api } from "@/lib/api";
-import { releaseFunds, openDispute } from "@/lib/contracts";
+import { releaseFunds, openDispute, getEscrowContractId } from "@/lib/contracts";
 import {
   formatDate,
   formatDateTime,
@@ -264,6 +264,15 @@ export default function JobDetailsPage() {
                   {formatDateTime(job.updated_at)}
                 </p>
               </div>
+            </div>
+
+            <div className="mt-4 rounded-[1.4rem] border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                Escrow Contract
+              </p>
+              <p className="mt-2 font-mono text-xs text-slate-600 break-all">
+                {getEscrowContractId() || "Not configured"}
+              </p>
             </div>
 
             {workflowLocked ? (
