@@ -55,9 +55,11 @@ export function useWalletSession() {
   const [isLoading, setIsLoading] = useState(true);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [connectionStep, setConnectionStep] = useState<string>("");
 
   const refreshWalletState = useCallback(async () => {
     try {
+      setConnectionStep("Checking wallet connection...");
       const [connected, network] = await Promise.all([
         getConnectedWalletAddress(),
         getWalletNetwork(),
@@ -65,12 +67,13 @@ export function useWalletSession() {
       setAddress(connected);
       setWalletNetwork(network);
       persistSession(connected);
+      setConnectionStep("");
     } catch (refreshError) {
-      setError(
-        refreshError instanceof Error
-          ? refreshError.message
-          : "Failed to restore wallet session.",
-      );
+      const errorMessage = refreshError instanceof Error
+        ? refreshError.message
+        : "Failed to restore wallet session.";
+      setError(errorMessage);
+      setConnectionStep("");
     } finally {
       setIsLoading(false);
     }
@@ -97,13 +100,20 @@ export function useWalletSession() {
   const connect = useCallback(async () => {
     setIsConnecting(true);
     setError(null);
+    setConnectionStep("Opening wallet selection...");
 
     try {
+      setConnectionStep("Connecting to wallet...");
       const connectedAddress = await connectWallet();
+      
+      setConnectionStep("Verifying network...");
       const network = await getWalletNetwork();
+      
+      setConnectionStep("Securing connection...");
       setAddress(connectedAddress);
       setWalletNetwork(network);
       persistSession(connectedAddress);
+      setConnectionStep("");
       return connectedAddress;
     } catch (connectError) {
       const message =
@@ -111,6 +121,7 @@ export function useWalletSession() {
           ? connectError.message
           : "Wallet connection failed.";
       setError(message);
+      setConnectionStep("");
       return null;
     } finally {
       setIsConnecting(false);
@@ -145,6 +156,7 @@ export function useWalletSession() {
     isConnecting,
     networkMismatch,
     error,
+    connectionStep,
     connect,
     disconnect,
     refreshWalletState,
