@@ -235,3 +235,23 @@ pub struct CastVoteRequest {
     pub freelancer_share_bps: i32,
     pub reasoning: String,
 }
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuthChallengeResponse {
+    pub address: String,
+    pub challenge: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AuthVerifyRequest {
+    pub address: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuthVerifyResponse {
+    pub token: String,
+    pub address: String,
+}

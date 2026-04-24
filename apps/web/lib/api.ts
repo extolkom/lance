@@ -1,11 +1,15 @@
 const API =
   process.env.NEXT_PUBLIC_API_URL ??
   (process.env.NEXT_PUBLIC_E2E === "true" ? "" : "http://localhost:3001");
+import { useAuthStore } from "./store/use-auth-store";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = useAuthStore.getState().user?.token;
+  
   const res = await fetch(`${API}/api${path}`, {
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { "Authorization": `Bearer ${token}` } : {}),
       ...(init?.headers ?? {}),
     },
     ...init,
@@ -104,12 +108,9 @@ export const api = {
   users: {
     getProfile: (address: string) =>
       request<PublicProfile>(`/v1/users/${address}/profile`),
-    updateProfile: (address: string, walletAddress: string, body: UpdateProfileBody) =>
+    updateProfile: (address: string, body: UpdateProfileBody) =>
       request<PublicProfile>(`/v1/users/${address}/profile`, {
         method: "PUT",
-        headers: {
-          "x-wallet-address": walletAddress,
-        },
         body: JSON.stringify(body),
       }),
   },
