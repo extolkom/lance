@@ -1,24 +1,45 @@
 import { StellarWalletsKit, Networks } from "@creit.tech/stellar-wallets-kit";
+import { StrKey, Transaction } from "@stellar/stellar-sdk";
 
-// TODO: See docs/ISSUES.md — "Wallet Connection"
 let kit: StellarWalletsKit | null = null;
+
+export type StellarNetwork = Networks.TESTNET | Networks.PUBLIC;
+
+export const APP_STELLAR_NETWORK: StellarNetwork =
+  (process.env.NEXT_PUBLIC_STELLAR_NETWORK as StellarNetwork) ?? Networks.TESTNET;
+
+export function isValidStellarAddress(address: string): boolean {
+  return StrKey.isValidEd25519PublicKey(address);
+}
+
+export function assertValidStellarAddress(address: string): string {
+  if (!isValidStellarAddress(address)) {
+    throw new Error("Invalid Stellar account address returned by wallet.");
+  }
+  return address;
+}
+
+export function assertValidTransactionXdr(xdr: string): string {
+  try {
+    // Parse to ensure shape and network passphrase are valid for this app config.
+    new Transaction(xdr, APP_STELLAR_NETWORK);
+    return xdr;
+  } catch {
+    throw new Error("Invalid Stellar transaction XDR.");
+  }
+}
 
 export function getWalletsKit(): StellarWalletsKit {
   if (!kit) {
     kit = new StellarWalletsKit({
-      network:
-        (process.env.NEXT_PUBLIC_STELLAR_NETWORK as Networks) ??
-        Networks.TESTNET,
+      network: APP_STELLAR_NETWORK,
       selectedWalletId: "freighter",
+      modules: ["freighter", "albedo", "xbull"],
     });
   }
   return kit;
 }
 
-/**
- * Opens the wallet-select modal and returns the connected public key.
- * Resolves once the user selects a wallet and the address is retrieved.
- */
 export async function connectWallet(): Promise<string> {
   if (process.env.NEXT_PUBLIC_E2E === "true") return "GD...CLIENT";
   const walletsKit = getWalletsKit();
@@ -28,36 +49,61 @@ export async function connectWallet(): Promise<string> {
         try {
           walletsKit.closeModal();
           const { address } = await walletsKit.getAddress();
-          resolve(address);
+          resolve(assertValidStellarAddress(address));
         } catch (err) {
           reject(err);
         }
       },
+      onClosed: () => reject(new Error("Wallet connection cancelled by user.")),
     });
   });
+}
+
+export async function disconnectWallet(): Promise<void> {
+  if (process.env.NEXT_PUBLIC_E2E === "true") return;
+  await getWalletsKit().disconnect();
 }
 
 export async function getConnectedWalletAddress(): Promise<string | null> {
   if (process.env.NEXT_PUBLIC_E2E === "true") return "GD...CLIENT";
   try {
     const { address } = await getWalletsKit().getAddress();
-    return address ?? null;
+    return assertValidStellarAddress(address);
   } catch {
     return null;
   }
 }
 
-/**
- * Signs an XDR transaction string via the connected wallet.
- * Returns the signed XDR string ready for submission to the Soroban RPC.
- */
+export async function getWalletNetwork(): Promise<StellarNetwork | null> {
+  const walletKit = getWalletsKit() as StellarWalletsKit & {
+    getNetwork?: () => Promise<{ network: string }>;
+  };
+
+  if (!walletKit.getNetwork) {
+    return null;
+  }
+
+  try {
+    const result = await walletKit.getNetwork();
+    const network = result.network;
+    if (network === Networks.TESTNET || network === Networks.PUBLIC) {
+      return network;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function signTransaction(xdr: string): Promise<string> {
   if (process.env.NEXT_PUBLIC_E2E === "true") return xdr;
+
   const walletsKit = getWalletsKit();
-  const networkPassphrase =
-    (process.env.NEXT_PUBLIC_STELLAR_NETWORK as Networks) ?? Networks.TESTNET;
-  const { signedTxXdr } = await walletsKit.signTransaction(xdr, {
-    networkPassphrase,
+  const validatedXdr = assertValidTransactionXdr(xdr);
+
+  const { signedTxXdr } = await walletsKit.signTransaction(validatedXdr, {
+    networkPassphrase: APP_STELLAR_NETWORK,
   });
-  return signedTxXdr;
+
+  return assertValidTransactionXdr(signedTxXdr);
 }
