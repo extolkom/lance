@@ -3,7 +3,6 @@
 import { useEffect, useCallback, useRef } from "react";
 import { useWalletStore } from "@/lib/store/use-wallet-store";
 import { getWalletsKit, registerWalletListeners } from "@/lib/stellar";
-import { Networks } from "@creit.tech/stellar-wallets-kit";
 import { toast } from "sonner";
 
 export function useWallet() {
@@ -16,26 +15,14 @@ export function useWallet() {
     setStatus, 
     setError, 
     disconnect,
-    setNetwork
   } = useWalletStore();
 
   const isInitialized = useRef(false);
 
-  const connect = useCallback(async (id: string) => {
+  const connect = useCallback(async (connectedAddress: string) => {
     setStatus("connecting");
-    const kit = getWalletsKit();
-    
     try {
-      kit.setWallet(id);
-      const { address: connectedAddress } = await kit.getAddress();
-      
-      // Verify network
-      const walletNetwork = await kit.getNetwork();
-      if (walletNetwork !== appNetwork) {
-        toast.warning(`Network mismatch! Your wallet is on ${walletNetwork}, but the app is on ${appNetwork}.`);
-      }
-
-      setConnection(connectedAddress, id);
+      setConnection(connectedAddress, connectedAddress);
       toast.success("Wallet connected successfully");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to connect wallet";
@@ -43,7 +30,7 @@ export function useWallet() {
       toast.error(message);
       throw err;
     }
-  }, [appNetwork, setConnection, setError, setStatus]);
+  }, [setConnection, setError, setStatus]);
 
   const handleDisconnect = useCallback(() => {
     disconnect();
@@ -58,13 +45,11 @@ export function useWallet() {
       if (address && walletId) {
         try {
           const kit = getWalletsKit();
-          kit.setWallet(walletId as string);
           const { address: currentAddress } = await kit.getAddress();
           
           if (currentAddress === address) {
             setStatus("connected");
           } else {
-            // Account changed while we were away
             setConnection(currentAddress, walletId);
           }
         } catch (err) {
