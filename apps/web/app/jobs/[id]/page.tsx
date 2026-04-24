@@ -13,6 +13,8 @@ import {
   Wallet,
 } from "lucide-react";
 import { BidList } from "@/components/jobs/bid-list";
+import { SubmitBidErrorBoundary } from "@/components/jobs/submit-bid-error-boundary";
+import { SubmitBidModal } from "@/components/jobs/submit-bid-modal";
 import { SiteShell } from "@/components/site-shell";
 import { Stars } from "@/components/stars";
 import { JobDetailsSkeleton } from "@/components/ui/skeleton";
@@ -32,7 +34,6 @@ export default function JobDetailsPage() {
   const router = useRouter();
   const workspace = useLiveJobWorkspace(id);
   const [viewerAddress, setViewerAddress] = useState<string | null>(null);
-  const [proposal, setProposal] = useState("");
   const [deliverableLabel, setDeliverableLabel] = useState("");
   const [deliverableLink, setDeliverableLink] = useState("");
   const [deliverableFile, setDeliverableFile] = useState<File | null>(null);
@@ -47,26 +48,6 @@ export default function JobDetailsPage() {
     const connected = await connectWallet();
     setViewerAddress(connected);
     return connected;
-  }
-
-  async function handleBid(event: React.FormEvent) {
-    event.preventDefault();
-    setBusyAction("bid");
-
-    try {
-      const freelancerAddress =
-        (await getConnectedWalletAddress()) ?? "GD...FREELANCER";
-      await api.bids.create(id, {
-        freelancer_address: freelancerAddress,
-        proposal,
-      });
-      setProposal("");
-      await workspace.refresh();
-    } catch {
-      alert("Failed to submit bid");
-    } finally {
-      setBusyAction(null);
-    }
   }
 
   async function handleAcceptBid(bidId: string) {
@@ -292,31 +273,25 @@ export default function JobDetailsPage() {
 
           {job.status === "open" ? (
             <div className="grid gap-6 xl:grid-cols-[1fr_0.95fr]">
-              <section className="rounded-[2rem] border border-slate-200 bg-white/85 p-6 shadow-[0_20px_60px_-48px_rgba(15,23,42,0.45)]">
-                <h2 className="text-xl font-semibold text-slate-950">
+              <section className="rounded-[2rem] border border-zinc-700/60 bg-zinc-950/90 p-6 shadow-[0_20px_60px_-48px_rgba(0,0,0,0.8)]">
+                <h2 className="text-xl font-semibold text-zinc-50">
                   Submit a Proposal
                 </h2>
-                <p className="mt-2 text-sm leading-6 text-slate-600">
+                <p className="mt-2 text-sm leading-6 text-zinc-300">
                   Pitch your approach, timing, and why your previous work maps cleanly to this brief.
                 </p>
-                <form onSubmit={handleBid} className="mt-5 space-y-4">
-                  <textarea
-                    value={proposal}
-                    onChange={(event) => setProposal(event.target.value)}
-                    className="min-h-[160px] w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-950 outline-none transition focus:border-amber-400"
-                    placeholder="Tell the client why you're a fit..."
-                    required
-                    id="bid-proposal"
-                  />
-                  <button
-                    type="submit"
-                    disabled={busyAction === "bid"}
-                    className="inline-flex items-center justify-center rounded-full bg-slate-950 px-6 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50"
-                    id="submit-bid"
-                  >
-                    {busyAction === "bid" ? "Submitting..." : "Submit Bid"}
-                  </button>
-                </form>
+                <div className="mt-5">
+                  <SubmitBidErrorBoundary>
+                    <SubmitBidModal
+                      jobId={id}
+                      disabled={busyAction !== null}
+                      onSubmitted={workspace.refresh}
+                      resolveFreelancerAddress={async () =>
+                        (await getConnectedWalletAddress()) ?? "GD...FREELANCER"
+                      }
+                    />
+                  </SubmitBidErrorBoundary>
+                </div>
               </section>
 
               <section className="rounded-[2rem] border border-slate-200 bg-white/85 p-6 shadow-[0_20px_60px_-48px_rgba(15,23,42,0.45)]">
