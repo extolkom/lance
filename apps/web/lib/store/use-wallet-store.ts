@@ -1,71 +1,91 @@
-import { create } from "zustand";
-import { persist, createJSONStorage } from "zustand/middleware";
-import { Networks } from "@creit.tech/stellar-wallets-kit";
+"use client";
 
-export type WalletStatus = "disconnected" | "connecting" | "connected" | "error";
+import { useEffect, useState } from "react";
+import { Wallet } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { WalletProviderIcon } from "@/components/wallet/wallet-provider-icon";
+import { useWalletStore } from "@/lib/store/use-wallet-store";
+import {
+  connectWalletWithInfo,
+  getConnectedWalletAddress,
+  getSelectedWalletId,
+  getWalletInfo,
+} from "@/lib/stellar";
 
-interface WalletState {
-  address: string | null;
-  walletId: string | null;
-  status: WalletStatus;
-  network: Networks;
-  error: string | null;
-  
-  // Actions
-  setConnection: (address: string, walletId: string) => void;
-  setStatus: (status: WalletStatus) => void;
-  setError: (error: string | null) => void;
-  setNetwork: (network: Networks) => void;
-  disconnect: () => void;
+function truncate(address: string): string {
+  if (address.length <= 12) return address;
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
 
-/**
- * Encrypts/Decrypts data for local storage.
- * Simple implementation to meet "encrypted local storage" requirement.
- * In a real-world scenario, use a more robust library like crypto-js.
- */
-const storageHelper = {
-  encrypt: (str: string) => btoa(str), // Placeholder for encryption
-  decrypt: (str: string) => atob(str), // Placeholder for decryption
-};
+export function WalletConnectButton() {
+  const address = useWalletStore((state) => state.address);
+  const walletId = useWalletStore((state) => state.walletId);
+  const setConnection = useWalletStore((state) => state.setConnection);
+  const [walletName, setWalletName] = useState<string | null>(null);
+  const [walletIcon, setWalletIcon] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState(false);
 
-export const useWalletStore = create<WalletState>()(
-  persist(
-    (set) => ({
-      address: null,
-      walletId: null,
-      status: "disconnected",
-      network: (process.env.NEXT_PUBLIC_STELLAR_NETWORK as Networks) ?? Networks.TESTNET,
-      error: null,
+  useEffect(() => {
+    if (address && walletId) return;
+    const storedId = getSelectedWalletId();
+    if (!storedId) return;
+    let cancelled = false;
+    (async () => {
+      const [connectedAddress, meta] = await Promise.all([
+        getConnectedWalletAddress(),
+        getWalletInfo(storedId),
+      ]);
+      if (cancelled || !connectedAddress || !meta) return;
+      setConnection(connectedAddress, meta.id);
+      setWalletName(meta.name);
+      setWalletIcon(meta.icon);
+    })();
+    return () => { cancelled = true; };
+  }, [address, walletId, setConnection]);
 
-      setConnection: (address, walletId) => 
-        set({ address, walletId, status: "connected", error: null }),
-      
-      setStatus: (status) => set({ status }),
-      
-      setError: (error) => set({ error, status: error ? "error" : "disconnected" }),
-      
-      setNetwork: (network) => set({ network }),
-      
-      disconnect: () => set({ address: null, walletId: null, status: "disconnected", error: null }),
-    }),
-    {
-      name: "lance-wallet-session",
-      storage: createJSONStorage(() => ({
-        getItem: (name) => {
-          const value = localStorage.getItem(name);
-          return value ? storageHelper.decrypt(value) : null;
-        },
-        setItem: (name, value) => {
-          localStorage.setItem(name, storageHelper.encrypt(value));
-        },
-        removeItem: (name) => localStorage.removeItem(name),
-      })),
-      partialize: (state) => ({
-        address: state.address,
-        walletId: state.walletId,
-        network: state.network,
-      }),
+  async function handleConnect() {
+    if (connecting) return;
+    setConnecting(true);
+    try {
+      const wallet = await connectWalletWithInfo();
+      setConnection(wallet.address, wallet.walletId);
+      setWalletName(wallet.walletName);
+      setWalletIcon(wallet.walletIcon);
+    } catch {
+      // User dismissed modal or extension errored; silent fail keeps UI stable.
+    } finally {
+      setConnecting(false);
     }
-  )
-);
+  }
+
+  if (address) {
+    return (
+      <div
+        className="hidden items-center gap-2 rounded-full border border-border/70 bg-card/70 px-3 py-1.5 text-sm md:flex"
+        aria-label={`Connected to ${walletName ?? walletId}`}
+      >
+        <WalletProviderIcon
+          walletName={walletName ?? undefined}
+          walletIcon={walletIcon ?? undefined}
+          size={18}
+        />
+        <span className="font-medium text-foreground">{walletName ?? walletId}</span>
+        <span className="text-xs text-muted-foreground">{truncate(address)}</span>
+      </div>
+    );
+  }
+
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={handleConnect}
+      disabled={connecting}
+      className="rounded-full"
+      aria-label="Connect Stellar wallet"
+    >
+      <Wallet className="mr-2 h-4 w-4" />
+      {connecting ? "Connecting…" : "Connect wallet"}
+    </Button>
+  );
+}
