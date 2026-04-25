@@ -144,7 +144,17 @@ export function usePostJob() {
         setIsSubmitting(false);
       }
     },
-    [reset, setStep, setTxHash, setSimulation, showLoading, updateToSuccess, updateToError, router],
+    [
+      reset,
+      setStep,
+      setTxHash,
+      setRawXdr,
+      setSimulation,
+      showLoading,
+      updateToSuccess,
+      updateToError,
+      router,
+    ],
   );
 
   return {

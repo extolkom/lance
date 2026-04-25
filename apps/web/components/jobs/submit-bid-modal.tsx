@@ -113,6 +113,7 @@ export function SubmitBidModal({
                   Share your execution plan, delivery confidence, and what makes you the best fit.
                 </p>
               </div>
+            </div>
             <div className="mt-6">
               {isContractActive || isSubmitting ? (
                 <div className="space-y-4">

@@ -1,25 +1,24 @@
 "use client";
 
-/**
- * useSubmitBid – React hook that bridges the XDR builder for job_registry.submit_bid,
- * transaction status store, and toast notifications.
- *
- * Pipeline: Create off-chain bid -> Build/Simulate/Sign/Submit/Confirm on-chain transaction.
- */
-
 import { useCallback, useState } from "react";
-import { submitBid, type SubmitBidResult, type LifecycleListener } from "@/lib/job-registry";
-import { useTxStatusStore } from "@/lib/store/use-tx-status-store";
-import { useTransactionToast } from "@/hooks/use-transaction-toast";
+import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import { connectWallet, getConnectedWalletAddress } from "@/lib/stellar";
+import {
+  submitBid,
+  type SubmitBidParams,
+  type LifecycleListener,
+} from "@/lib/job-registry";
+import { useTxStatusStore } from "@/lib/store/use-tx-status-store";
+import { useTransactionToast } from "@/components/transaction/use-transaction-toast";
 
-export interface SubmitBidInput {
-  jobId: string; // Off-chain UUID
-  onChainJobId: bigint;
-  proposal: string;
-}
-
+/**
+ * Hook to manage the lifecycle of submitting a bid to the job registry.
+ *
+ * Flow:
+ * 1. Create off-chain record via API (status: pending)
+ * 2. Build, Simulate, Sign, Submit, Confirm on-chain transaction
+ * 3. Update UI/Toasts accordingly
+ */
 export function useSubmitBid() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -27,37 +26,26 @@ export function useSubmitBid() {
   const { showLoading, updateToSuccess, updateToError } = useTransactionToast();
 
   const submit = useCallback(
-    async (input: SubmitBidInput) => {
+    async (params: { jobId: string; onChainJobId: bigint; proposal: string }) => {
       setIsSubmitting(true);
       reset();
 
-      let loadingToast: ReturnType<typeof showLoading> | null = null;
+      const toastId = showLoading({
+        title: "Submitting Bid",
+        description: "Preparing your proposal for the blockchain...",
+      });
 
       try {
-        // ── Ensure wallet connection ────────────────────────────────────
-        const freelancerAddress =
-          (await getConnectedWalletAddress()) ??
-          (await connectWallet());
-
-        // ── Step A: Create off-chain bid record ─────────────────────────
-        loadingToast = showLoading(
-          "Creating bid record...",
-          "Saving your proposal to the database",
-        );
-
-        const bid = await api.bids.create(input.jobId, {
-          freelancer_address: freelancerAddress,
-          proposal: input.proposal,
+        // ─── Step 1: Off-chain Record ─────────────────────────────────────
+        // We create the bid record first so internal systems can track it.
+        // If the on-chain TX fails, the record remains in a 'pending' or 'failed' state.
+        const bid = await api.bids.create(params.jobId, {
+          freelancer_address: "PENDING_ON_CHAIN", // Will be updated by indexer
+          proposal: params.proposal,
         });
 
-        // ── Step B: Submit on-chain submit_bid transaction ──────────────
-        updateToSuccess(
-          loadingToast,
-          "Bid record created",
-          "Now submitting to the Stellar blockchain...",
-        );
-
-        // Build lifecycle listener that updates store + toasts
+        // ─── Step 2: On-chain Transaction ─────────────────────────────────
+        // build lifecycle listener that updates store + toasts
         const onStep: LifecycleListener = (step, detail, metadata) => {
           setStep(step, detail);
           if (metadata?.rawXdr) setRawXdr(metadata.rawXdr);
@@ -66,54 +54,45 @@ export function useSubmitBid() {
           if (step === "confirming" && detail) {
             setTxHash(detail);
           }
-
-          // Update toast for key milestones
-          if (step === "signing") {
-            showLoading(
-              "Waiting for signature...",
-              "Please approve the transaction in your wallet",
-            );
-          }
         };
 
-        // Use the bid ID as a metadata hash/CID-like identifier
-        const proposalHash = `bid-${bid.id}`;
-
-        const result: SubmitBidResult = await submitBid(
+        const result = await submitBid(
           {
-            jobId: input.onChainJobId,
-            freelancerAddress,
-            proposalHash,
+            onChainJobId: params.onChainJobId,
+            proposal: params.proposal,
           },
           onStep,
         );
 
-        // ── Step C: Update store with simulation diagnostics ────────────
-        setTxHash(result.txHash);
+        // ─── Step 3: Success ──────────────────────────────────────────────
         setSimulation(result.simulation);
+        updateToSuccess(toastId, {
+          title: "Bid Submitted",
+          description: "Your proposal has been recorded on the Stellar network.",
+        });
 
-        // ── Success ─────────────────────────────────────────────────────
-        updateToSuccess(
-          loadingToast,
-          "Bid submitted on-chain!",
-          `Transaction ${result.txHash.slice(0, 12)}... confirmed`,
-          result.txHash,
-        );
-
-        return { bid, result };
+        return { bid, txHash: result.txHash };
       } catch (error) {
-        setStep("failed", error instanceof Error ? error.message : String(error));
-        updateToError(
-          loadingToast ?? showLoading("Processing..."),
-          "Transaction failed",
-          error instanceof Error ? error.message : "An unexpected error occurred",
-        );
+        setStep("failed", error instanceof Error ? error.message : "Unknown error");
+        updateToError(toastId, {
+          title: "Submission Failed",
+          description: error instanceof Error ? error.message : "Blockchain transaction failed.",
+        });
         throw error;
       } finally {
         setIsSubmitting(false);
       }
     },
-    [reset, setStep, setTxHash, setSimulation, showLoading, updateToSuccess, updateToError],
+    [
+      reset,
+      setStep,
+      setTxHash,
+      setRawXdr,
+      setSimulation,
+      showLoading,
+      updateToSuccess,
+      updateToError,
+    ],
   );
 
   return {
