@@ -5,6 +5,7 @@ import { useWalletSession } from "@/hooks/use-wallet-session";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { WalletErrorBanner } from "./wallet-error-display";
+import { shortenAddress } from "@/lib/format";
 
 interface ConnectWalletButtonProps {
   className?: string;
@@ -32,7 +33,6 @@ export function ConnectWalletButton({ className }: ConnectWalletButtonProps) {
     isConnecting,
     networkMismatch,
     error,
-    connectionStep,
     connect,
     disconnect,
   } = useWalletSession();
@@ -58,14 +58,14 @@ export function ConnectWalletButton({ className }: ConnectWalletButtonProps) {
           aria-live="polite"
         >
           <Shield className="h-3 w-3" aria-hidden="true" />
-          <span>{connectionStep || "Securing connection"}</span>
+          <span>Securing connection</span>
         </div>
       </div>
     );
   }
 
   if (isConnected && address) {
-    const truncated = `${address.slice(0, 4)}…${address.slice(-4)}`;
+    const truncated = shortenAddress(address, 4, 4);
 
     return (
       <div className={cn("flex flex-col items-end gap-1 responsive-gap", className)}>
@@ -155,7 +155,7 @@ export function ConnectWalletButton({ className }: ConnectWalletButtonProps) {
           aria-live="polite"
         >
           <Shield className="h-3 w-3 animate-pulse" aria-hidden="true" />
-          <span>{connectionStep || "Establishing secure connection"}</span>
+          <span>Establishing secure connection</span>
         </div>
       )}
     </div>

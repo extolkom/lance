@@ -242,9 +242,44 @@ pub struct ArbiterVote {
     pub created_at: DateTime<Utc>,
 }
 
+// ── Deposit ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, Clone)]
+pub struct Deposit {
+    pub id: String,
+    pub ledger: i64,
+    pub contract_id: String,
+    pub sender: String,
+    pub amount: i64,
+    pub token: String,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CastVoteRequest {
     pub arbiter_address: String,
     pub freelancer_share_bps: i32,
     pub reasoning: String,
+}
+
+// ── Activity Log ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, Clone)]
+pub struct ActivityLog {
+    pub id: uuid::Uuid,
+    pub user_address: Option<String>,
+    pub job_id: Option<uuid::Uuid>,
+    pub event_type: String,
+    pub level: String,
+    pub details: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateActivityLogRequest {
+    pub user_address: Option<String>,
+    pub job_id: Option<uuid::Uuid>,
+    pub event_type: String,
+    pub level: Option<String>,
+    pub details: Option<serde_json::Value>,
 }

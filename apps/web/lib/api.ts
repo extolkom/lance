@@ -148,6 +148,7 @@ export interface CreateJobBody {
   budget_usdc: number;
   milestones: number;
   client_address: string;
+  memo?: string;
 }
 
 export interface MarkFundedBody {
@@ -273,3 +274,27 @@ export interface UpdateProfileBody {
   bio: string;
   portfolio_links: string[];
 }
+
+export interface ActivityLog {
+  id: string;
+  user_address?: string | null;
+  job_id?: string | null;
+  event_type: string;
+  level: string;
+  details: Record<string, unknown>;
+  created_at: string;
+}
+
+export const apiActivity = {
+  list: (params?: { jobId?: string; userAddress?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.jobId) qs.set("job_id", params.jobId);
+    if (params?.userAddress) qs.set("user_address", params.userAddress);
+    if (params?.limit) qs.set("limit", String(params.limit));
+    if (params?.offset) qs.set("offset", String(params.offset));
+    const path = `/v1/activity/logs${qs.toString() ? `?${qs.toString()}` : ""}`;
+    return request<ActivityLog[]>(path);
+  },
+  create: (body: { user_address?: string; job_id?: string; event_type: string; level?: string; details?: Record<string, unknown> }) =>
+    request<ActivityLog>(`/v1/activity/logs`, { method: "POST", body: JSON.stringify(body) }),
+};
