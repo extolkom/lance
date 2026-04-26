@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { CalendarDays, Wallet } from "lucide-react";
 import { SiteShell } from "@/components/site-shell";
+import RichTextEditor from "@/components/ui/rich-text-editor";
 import { TransactionTracker } from "@/components/transaction/transaction-tracker";
 import { usePostJob } from "@/hooks/use-post-job";
 import { useTxStatusStore } from "@/lib/store/use-tx-status-store";
@@ -92,15 +93,7 @@ export default function NewJobPage() {
               <label className="mb-2 block text-sm font-semibold text-slate-700">
                 Scope
               </label>
-              <textarea
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-                className="min-h-[180px] w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-950 outline-none transition focus:border-amber-400"
-                placeholder="Describe requirements, acceptance criteria, and what counts as a complete milestone."
-                required
-                id="job-description"
-                disabled={isSubmitting || isTxInProgress}
-              />
+              <RichTextEditor id="job-description" value={description} onChange={setDescription} />
             </div>
 
             <div className="grid gap-5 sm:grid-cols-2">
@@ -203,8 +196,7 @@ export default function NewJobPage() {
           </h2>
           <ul className="mt-6 space-y-4 text-sm leading-6 text-slate-300">
             <li>
-              The transaction follows a secure pipeline: Build &rarr; Simulate &rarr;
-              Sign &rarr; Submit &rarr; Confirm.
+              The transaction follows a secure pipeline: Build → Simulate → Sign → Submit → Confirm.
             </li>
             <li>
               Simulation estimates fees and resources before you sign, so there are
@@ -223,10 +215,7 @@ export default function NewJobPage() {
               clean.
             </li>
             <li>
-              Estimated completion target:{" "}
-              <span className="font-semibold text-slate-100">
-                {estimatedCompletionDate}
-              </span>
+              Estimated completion target: <span className="font-semibold text-slate-100">{estimatedCompletionDate}</span>
             </li>
           </ul>
 
