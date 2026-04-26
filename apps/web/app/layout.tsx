@@ -4,6 +4,8 @@ import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { Providers } from "@/components/providers";
 import { ToastProvider } from "@/components/ui/toast-provider";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Lance",
   description: "Mock-ready freelance platform flows for deterministic E2E testing.",
@@ -16,7 +18,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="bg-background text-foreground antialiased">
+      <body className="bg-background text-foreground antialiased font-sans">
         <Providers>
           <ToastProvider>
             <DashboardLayout>{children}</DashboardLayout>
