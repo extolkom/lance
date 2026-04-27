@@ -87,9 +87,14 @@ export function useLiveJobWorkspace(jobId: string): LiveJobWorkspace {
     }
   }, [jobId]);
 
-  useEffect(() => {
+  const [prevJobId, setPrevJobId] = useState(jobId);
+  if (jobId !== prevJobId) {
+    setPrevJobId(jobId);
     setLoading(true);
-    void refresh();
+  }
+
+  useEffect(() => {
+    setTimeout(() => void refresh(), 0);
 
     const interval = window.setInterval(() => {
       void refresh();
