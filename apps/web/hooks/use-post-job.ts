@@ -40,7 +40,7 @@ export function usePostJob() {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const { setStep, setTxHash, setRawXdr, setSimulation, reset } = useTxStatusStore();
+  const { setStep, setTxHash, setUnsignedXdr, setSignedXdr, setSimulation, reset } = useTxStatusStore();
   const { showLoading, updateToSuccess, updateToError } = useTransactionToast();
 
   const submit = useCallback(
@@ -106,7 +106,14 @@ export function usePostJob() {
         // Build lifecycle listener that updates store + toasts
         const onStep: LifecycleListener = (step, detail, metadata) => {
           setStep(step, detail);
-          if (metadata?.rawXdr) setRawXdr(metadata.rawXdr);
+          
+          if (metadata?.rawXdr) {
+            if (step === "building" || step === "simulating") {
+              setUnsignedXdr(metadata.rawXdr);
+            } else if (step === "signing" || step === "submitting" || step === "confirming" || step === "confirmed") {
+              setSignedXdr(metadata.rawXdr);
+            }
+          }
 
           // Capture tx hash when available
           if (step === "confirming" && detail) {
@@ -174,7 +181,8 @@ export function usePostJob() {
       reset,
       setStep,
       setTxHash,
-      setRawXdr,
+      setUnsignedXdr,
+      setSignedXdr,
       setSimulation,
       showLoading,
       updateToSuccess,

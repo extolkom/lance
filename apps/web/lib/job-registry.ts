@@ -68,6 +68,10 @@ export interface SimulationResult {
   cpuInstructions: string;
   /** Memory bytes consumed. */
   memoryBytes: string;
+  /** Ledger read bytes. */
+  readBytes?: number;
+  /** Ledger write bytes. */
+  writeBytes?: number;
   /** Raw simulation response for dev logging. */
   raw?: unknown;
 }
@@ -143,7 +147,7 @@ function shouldMockCalls(): boolean {
 
 /** Encode a UTF-8 string as an ScVal bytes value. */
 function metadataHashToScVal(hash: string): xdr.ScVal {
-  const bytes = Buffer.from(hash, "utf-8");
+  const bytes = new TextEncoder().encode(hash);
   return nativeToScVal(bytes, { type: "bytes" });
 }
 
@@ -383,17 +387,23 @@ async function invokeJobRegistry(
 
       if (Api.isSimulationError(simResult)) {
         throw new Error(
-          `Simulation failed: ${(simResult as Api.SimulateTransactionErrorResponse).error}`,
+          `Simulation failed: ${simResult.error}`,
         );
       }
 
       // Extract resource metrics from successful simulation
       const simSuccess = simResult as Api.SimulateTransactionSuccessResponse;
+      
+      // Cost is often in the raw response but not in the parsed SDK types for some versions
+      const asAny = simSuccess as any;
+      const cost = asAny.cost || {};
 
       simulation = {
         fee: simSuccess.minResourceFee ?? BASE_FEE,
-        cpuInstructions: simSuccess.events?.length.toString() ?? "0", // Mocking resource metrics mapping
-        memoryBytes: "0",
+        cpuInstructions: cost.cpuInsns ?? "0",
+        memoryBytes: cost.memBytes ?? "0",
+        readBytes: simSuccess.transactionData?.readBytes() ?? 0,
+        writeBytes: simSuccess.transactionData?.writeBytes() ?? 0,
         raw: IS_DEV ? simResult : undefined,
       };
 
@@ -424,6 +434,20 @@ async function invokeJobRegistry(
       devLog("send-result", sendResult);
 
       if (sendResult.status === "ERROR") {
+        // Precise sequence mismatch detection via result XDR if available
+        let isSeqMismatch = false;
+        try {
+          if (sendResult.errorResult) {
+            isSeqMismatch = sendResult.errorResult.result().switch().name === 'txBadSeq';
+          }
+        } catch {
+          // Fallback to string matching if XDR parsing fails
+        }
+
+        if (isSeqMismatch) {
+          throw new Error("SEQUENCE_NUMBER_MISMATCH");
+        }
+
         throw new Error(
           `Transaction submission failed: ${JSON.stringify(sendResult.errorResult ?? "unknown error")}`,
         );
@@ -433,21 +457,22 @@ async function invokeJobRegistry(
       devLog("tx-hash", txHash);
 
       // ── Step 5: Confirm ───────────────────────────────────────────────
-      onStep?.("confirming");
+      onStep?.("confirming", txHash);
       for (let i = 0; i < POLL_MAX_RETRIES; i++) {
         await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
         const result = await rpc.getTransaction(txHash);
         devLog("poll-result", { attempt: i + 1, status: result.status });
 
-        if (result.status === "SUCCESS") {
+        if (result.status === Api.GetTransactionStatus.SUCCESS) {
           onStep?.("confirmed", txHash);
           return {
             txHash,
             simulation: simulation!,
           };
         }
-        if (result.status === "FAILED") {
-          throw new Error(`Transaction failed on-chain (hash: ${txHash})`);
+        if (result.status === Api.GetTransactionStatus.FAILED) {
+          const detail = result.resultXdr ? result.resultXdr.toXDR("base64") : "unknown failure";
+          throw new Error(`Transaction failed on-chain (hash: ${txHash}): ${detail}`);
         }
         // NOT_FOUND → still pending, keep polling
       }
@@ -456,20 +481,22 @@ async function invokeJobRegistry(
         `Confirmation timed out after ${POLL_MAX_RETRIES * (POLL_INTERVAL_MS / 1_000)}s (hash: ${txHash})`,
       );
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : String(err);
+      const message = err instanceof Error ? err.message : String(err);
 
       // Detect sequence number mismatch → retry with fresh account
       if (
         message.includes("tx_bad_seq") ||
         message.includes("Sequence Number Mismatch") ||
-        message.includes("SEQUENCE_NUMBER_MISMATCH")
+        message.includes("SEQUENCE_NUMBER_MISMATCH") ||
+        message.includes("bad_seq")
       ) {
         lastError = err instanceof Error ? err : new Error(message);
         devLog("seq-mismatch-retry", {
           attempt: seqRetry + 1,
           max: SEQ_MISMATCH_MAX_RETRIES,
         });
+        // Brief pause before retry
+        await new Promise(r => setTimeout(r, 1000));
         continue;
       }
 
