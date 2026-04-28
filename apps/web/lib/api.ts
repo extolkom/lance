@@ -1,4 +1,5 @@
 import { jwtMemory } from "@/lib/store/use-auth-store";
+import type { ReputationMetrics } from "@/lib/reputation";
 
 const API =
   process.env.NEXT_PUBLIC_API_URL ??
@@ -164,6 +165,7 @@ export interface Bid {
   proposal: string;
   status: string;
   created_at: string;
+  freelancerReputation?: ReputationMetrics;
 }
 
 export interface CreateBidBody {
