@@ -394,16 +394,27 @@ async function invokeJobRegistry(
       // Extract resource metrics from successful simulation
       const simSuccess = simResult as Api.SimulateTransactionSuccessResponse;
       
-      // Cost is often in the raw response but not in the parsed SDK types for some versions
-      const asAny = simSuccess as any;
-      const cost = asAny.cost || {};
+      // Access cost and transaction data resources defensively to satisfy both 
+      // the compiler and ESLint without using 'any'.
+      const simData = simSuccess as unknown as { 
+        cost?: { cpuInsns?: string; memBytes?: string };
+        transactionData?: { 
+          resources?: () => { 
+            readBytes: () => number; 
+            writeBytes: () => number 
+          } 
+        };
+      };
+
+      const cost = simData.cost || {};
+      const resources = simData.transactionData?.resources?.();
 
       simulation = {
         fee: simSuccess.minResourceFee ?? BASE_FEE,
         cpuInstructions: cost.cpuInsns ?? "0",
         memoryBytes: cost.memBytes ?? "0",
-        readBytes: simSuccess.transactionData?.readBytes() ?? 0,
-        writeBytes: simSuccess.transactionData?.writeBytes() ?? 0,
+        readBytes: resources?.readBytes() ?? 0,
+        writeBytes: resources?.writeBytes() ?? 0,
         raw: IS_DEV ? simResult : undefined,
       };
 

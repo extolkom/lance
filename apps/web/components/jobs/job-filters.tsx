@@ -11,8 +11,7 @@ import {
   X
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useState, useEffect } from "react";
-import { jobFilterSchema, type JobFilter } from "@/lib/validators/filter";
+import { useState } from "react";
 
 interface JobFiltersProps {
   query: string;

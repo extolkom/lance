@@ -24,7 +24,6 @@ import {
   PenTool,
   Send,
   ShieldCheck,
-  Circle,
   Terminal,
   ChevronDown,
   ChevronUp,

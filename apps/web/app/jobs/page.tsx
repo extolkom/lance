@@ -6,12 +6,9 @@ import {
   Briefcase,
   Clock3,
   DollarSign,
-  Filter,
   Layers,
   Plus,
-  Search,
   Shield,
-  SlidersHorizontal,
   Sparkles,
   TrendingUp,
   Users,
@@ -26,14 +23,6 @@ import { useJobBoard } from "@/hooks/use-job-board";
 import { formatDate, formatUsdc, shortenAddress } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { BoardJob } from "@/hooks/use-job-board";
-
-// ─── Sort options ────────────────────────────────────────────────────────────
-
-const SORT_OPTIONS = [
-  { id: "chronological", label: "Newest", icon: <Clock3 className="h-3.5 w-3.5" /> },
-  { id: "budget", label: "Top Budget", icon: <TrendingUp className="h-3.5 w-3.5" /> },
-  { id: "reputation", label: "Best Client", icon: <Shield className="h-3.5 w-3.5" /> },
-] as const;
 
 // ─── Status config ───────────────────────────────────────────────────────────
 
@@ -385,7 +374,7 @@ export default function JobsPage() {
         setActiveTag={actions.setActiveTag}
         sortBy={sortBy}
         setSortBy={actions.setSortBy}
-        availableTags={availableTags}
+        availableTags={availableTags as string[]}
         minBudget={minBudget}
         setMinBudget={actions.setMinBudget}
         maxBudget={maxBudget}
@@ -430,7 +419,7 @@ export default function JobsPage() {
           <SkeletonGrid />
         ) : paginatedJobs.length > 0 ? (
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {paginatedJobs.map((job) => (
+            {paginatedJobs.map((job: BoardJob) => (
               <JobCard key={job.id} job={job} />
             ))}
           </div>
