@@ -2,12 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
 
 env:
-  DATABASE_URL: postgresql://lance:lance@localhost:5432/lance
+  DATABASE_URL: https://lance-api-641037923100.us-central1.run.app
   JUDGE_AUTHORITY_SECRET: SBU6F23AV5T5E6AXK2J5C6A6C6A6C6A6C6A6C6A6C6A6C6A6C6A6C6A6
   ESCROW_CONTRACT_ID: CD5E6AXK2J5C6A6C6A6C6A6C6A6C6A6C6A6C6A6C6A6C6A6C6A6C6A6C6A6
   REPUTATION_CONTRACT_ID: CD5E6AXK2J5C6A6C6A6C6A6C6A6C6A6C6A6C6A6C6A6C6A6C6A6C6A6C6A6
@@ -39,12 +39,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
+          cache: "npm"
           cache-dependency-path: package-lock.json
       - name: Install dependencies
         run: npm ci --prefix backend
       - name: Generate Prisma Client
-        run: DATABASE_URL=postgresql://lance:lance@localhost:5432/lance npx prisma generate --schema=backend/prisma/schema.prisma
+        run: DATABASE_URL=https://lance-api-641037923100.us-central1.run.app npx prisma generate --schema=backend/prisma/schema.prisma
       - name: Build
         run: npm run build --prefix backend
 
@@ -57,10 +57,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
+          cache: "npm"
           cache-dependency-path: package-lock.json
       - name: Install dependencies
-        run: npm install --prefix apps/web
+        run: npm ci --prefix apps/web
       - name: Lint
         run: npm run lint --prefix apps/web
       - name: Build
