@@ -1,8 +1,11 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{get, post},
     Json, Router,
 };
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sqlx::{Postgres, QueryBuilder};
 use uuid::Uuid;
 
 use crate::{
@@ -11,6 +14,33 @@ use crate::{
     models::{CreateJobRequest, Job, MarkJobFundedRequest},
     routes::{bids, deliverables, milestones},
 };
+
+const DEFAULT_JOB_PAGE_LIMIT: i64 = 25;
+const MAX_JOB_PAGE_LIMIT: i64 = 100;
+
+#[derive(Debug, Deserialize)]
+struct ListJobsQuery {
+    limit: Option<i64>,
+    cursor_created_at: Option<DateTime<Utc>>,
+    cursor_id: Option<Uuid>,
+    min_budget: Option<i64>,
+    max_budget: Option<i64>,
+    skills: Option<String>,
+    deadline_before: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize)]
+struct JobPage {
+    items: Vec<Job>,
+    next_cursor: Option<JobCursor>,
+    limit: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct JobCursor {
+    created_at: DateTime<Utc>,
+    id: Uuid,
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -35,16 +65,107 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-async fn list_jobs(State(state): State<AppState>) -> Result<Json<Vec<Job>>> {
-    let jobs = sqlx::query_as::<_, Job>(
+#[tracing::instrument(skip(state), fields(limit = query.limit.unwrap_or(DEFAULT_JOB_PAGE_LIMIT)))]
+async fn list_jobs(
+    State(state): State<AppState>,
+    Query(query): Query<ListJobsQuery>,
+) -> Result<Json<JobPage>> {
+    if matches!(
+        (query.cursor_created_at, query.cursor_id),
+        (Some(_), None) | (None, Some(_))
+    ) {
+        return Err(AppError::BadRequest(
+            "cursor_created_at and cursor_id must be provided together".into(),
+        ));
+    }
+    if matches!((query.min_budget, query.max_budget), (Some(min), Some(max)) if min > max) {
+        return Err(AppError::BadRequest(
+            "min_budget cannot be greater than max_budget".into(),
+        ));
+    }
+
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_JOB_PAGE_LIMIT)
+        .clamp(1, MAX_JOB_PAGE_LIMIT);
+    let skill_filters: Vec<String> = query
+        .skills
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|skill| !skill.is_empty())
+        .map(str::to_owned)
+        .collect();
+
+    let mut builder = QueryBuilder::<Postgres>::new(
         r#"SELECT id, title, description, budget_usdc, milestones, client_address,
                   freelancer_address, status, metadata_hash, on_chain_job_id,
                   created_at, updated_at
-           FROM jobs ORDER BY created_at DESC"#,
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    Ok(Json(jobs))
+           FROM jobs"#,
+    );
+
+    let mut has_where = false;
+    append_where(&mut builder, &mut has_where);
+    builder
+        .push(" budget_usdc >= ")
+        .push_bind(query.min_budget.unwrap_or(0));
+
+    if let Some(max_budget) = query.max_budget {
+        append_where(&mut builder, &mut has_where);
+        builder.push(" budget_usdc <= ").push_bind(max_budget);
+    }
+    if !skill_filters.is_empty() {
+        append_where(&mut builder, &mut has_where);
+        builder.push(" skills && ").push_bind(skill_filters);
+    }
+    if let Some(deadline_before) = query.deadline_before {
+        append_where(&mut builder, &mut has_where);
+        builder.push(" deadline_at <= ").push_bind(deadline_before);
+    }
+    if let (Some(cursor_created_at), Some(cursor_id)) = (query.cursor_created_at, query.cursor_id) {
+        append_where(&mut builder, &mut has_where);
+        builder
+            .push(" (created_at, id) < (")
+            .push_bind(cursor_created_at)
+            .push(", ")
+            .push_bind(cursor_id)
+            .push(")");
+    }
+
+    builder
+        .push(" ORDER BY created_at DESC, id DESC LIMIT ")
+        .push_bind(limit + 1);
+
+    let mut jobs = builder
+        .build_query_as::<Job>()
+        .fetch_all(&state.pool)
+        .await?;
+
+    let next_cursor = if jobs.len() > limit as usize {
+        jobs.pop().map(|job| JobCursor {
+            created_at: job.created_at,
+            id: job.id,
+        })
+    } else {
+        None
+    };
+
+    tracing::debug!(returned = jobs.len(), has_next = next_cursor.is_some());
+    Ok(Json(JobPage {
+        items: jobs,
+        next_cursor,
+        limit,
+    }))
+}
+
+fn append_where(builder: &mut QueryBuilder<'_, Postgres>, has_where: &mut bool) {
+    if *has_where {
+        builder.push(" AND");
+    } else {
+        builder.push(" WHERE");
+        *has_where = true;
+    }
 }
 
 async fn get_job(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<Job>> {
@@ -80,8 +201,10 @@ async fn create_job(
     let mut tx = state.pool.begin().await?;
 
     let job = sqlx::query_as::<_, Job>(
-        r#"INSERT INTO jobs (title, description, budget_usdc, milestones, client_address, status)
-           VALUES ($1, $2, $3, $4, $5, 'open')
+        r#"INSERT INTO jobs (
+               title, description, budget_usdc, milestones, client_address, status, skills, deadline_at
+           )
+           VALUES ($1, $2, $3, $4, $5, 'open', $6, $7)
            RETURNING id, title, description, budget_usdc, milestones, client_address,
                      freelancer_address, status, metadata_hash, on_chain_job_id,
                      created_at, updated_at"#,
@@ -91,6 +214,8 @@ async fn create_job(
     .bind(req.budget_usdc)
     .bind(req.milestones)
     .bind(req.client_address)
+    .bind(req.skills)
+    .bind(req.deadline_at)
     .fetch_one(&mut *tx)
     .await?;
 

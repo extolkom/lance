@@ -27,6 +27,10 @@ pub struct CreateJobRequest {
     pub budget_usdc: i64,
     pub milestones: i32,
     pub client_address: String,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub deadline_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize)]
