@@ -861,7 +861,9 @@ impl EscrowContract {
         let next_status = EscrowStatus::Disputed;
         job.status.validate_transition(&next_status)?;
         job.status = next_status;
-        job.dispute_deadline = env.ledger().timestamp() + Self::DISPUTE_RESOLUTION_WINDOW;
+        job.dispute_deadline = env.ledger().timestamp()
+            .checked_add(Self::DISPUTE_RESOLUTION_WINDOW)
+            .ok_or(EscrowError::ArithmeticError)?;
         log!(&env, "open_dispute: job {}", job_id);
         env.storage().persistent().set(&key, &job);
         Self::bump_job_ttl(&env, &key);
@@ -924,7 +926,9 @@ impl EscrowContract {
         let next_status = EscrowStatus::Disputed;
         job.status.validate_transition(&next_status)?;
         job.status = next_status;
-        job.dispute_deadline = now + Self::DISPUTE_RESOLUTION_WINDOW;
+        job.dispute_deadline = now
+            .checked_add(Self::DISPUTE_RESOLUTION_WINDOW)
+            .ok_or(EscrowError::ArithmeticError)?;
         log!(&env, "raise_dispute: job {}", job_id);
         env.storage().persistent().set(&key, &job);
         Self::bump_job_ttl(&env, &key);
@@ -935,7 +939,7 @@ impl EscrowContract {
         let mut released_count = 0u32;
         for m in job.milestones.iter() {
             if m.status == MilestoneStatus::Released {
-                released_count += 1;
+                released_count = released_count.checked_add(1).ok_or(EscrowError::ArithmeticError)?;
             }
         }
 
@@ -1132,6 +1136,54 @@ impl EscrowContract {
                 canceled_by: client,
                 canceled_at: env.ledger().timestamp(),
             },
+        );
+
+        Ok(())
+    }
+
+    /// Recoups storage space by removing the job from persistent storage.
+    /// Can only be invoked by the client or freelancer, and only if the job
+    /// is in a terminal state (Completed, Refunded, or Resolved).
+    pub fn cleanup_job(env: Env, job_id: u64, caller: Address) -> Result<(), EscrowError> {
+        caller.require_auth();
+
+        let key = DataKey::Job(job_id);
+        let job: EscrowJob = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(EscrowError::JobNotFound)?;
+
+        if !(caller == job.client || caller == job.freelancer) {
+            return Err(EscrowError::Unauthorized);
+        }
+
+        if !(job.status == EscrowStatus::Completed
+            || job.status == EscrowStatus::Refunded
+            || job.status == EscrowStatus::Resolved)
+        {
+            return Err(EscrowError::InvalidState);
+        }
+
+        let remaining = job
+            .total_amount
+            .checked_sub(job.released_amount)
+            .ok_or(EscrowError::ArithmeticError)?;
+        if remaining > 0 {
+            return Err(EscrowError::InvalidState); // Should not happen in terminal state
+        }
+
+        // De-allocate
+        env.storage().persistent().remove(&key);
+
+        let ms_key = DataKey::MultisigConfig(job_id);
+        if env.storage().persistent().has(&ms_key) {
+            env.storage().persistent().remove(&ms_key);
+        }
+
+        env.events().publish(
+            ("escrow", "CleanupJob"),
+            (job_id, caller, env.ledger().timestamp()),
         );
 
         Ok(())
@@ -3696,5 +3748,100 @@ mod test {
         // open_dispute must fail in Completed state
         let result = cc.try_open_dispute(&2u64, &client);
         assert!(result.is_err());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // SC-ESC-019: Dynamic Storage Allocation Recouping (State De-allocation)
+    // ─────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_cleanup_job_completed() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let agent_judge = Address::generate(&env);
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+
+        let token_addr = setup_token(&env, &admin);
+        mint(&env, &token_addr, &client);
+
+        let contract_id = env.register_contract(None, EscrowContract);
+        let cc = EscrowContractClient::new(&env, &contract_id);
+
+        cc.initialize(&admin, &agent_judge);
+        cc.create_job(&1u64, &client, &freelancer, &token_addr);
+        cc.add_milestone(&1u64, &5000i128);
+        cc.deposit(&1u64, &5000i128);
+        cc.release_milestone(&1u64, &client);
+
+        assert_eq!(cc.get_job(&1u64).status, EscrowStatus::Completed);
+
+        // cleanup_job by client
+        cc.cleanup_job(&1u64, &client);
+
+        // verify it is deleted
+        let result = cc.try_get_job(&1u64);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cleanup_job_invalid_state() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let agent_judge = Address::generate(&env);
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+
+        let token_addr = setup_token(&env, &admin);
+        mint(&env, &token_addr, &client);
+
+        let contract_id = env.register_contract(None, EscrowContract);
+        let cc = EscrowContractClient::new(&env, &contract_id);
+
+        cc.initialize(&admin, &agent_judge);
+        cc.create_job(&1u64, &client, &freelancer, &token_addr);
+        cc.add_milestone(&1u64, &5000i128);
+        
+        // Setup state
+        assert_eq!(cc.get_job(&1u64).status, EscrowStatus::Setup);
+        let res = cc.try_cleanup_job(&1u64, &client);
+        assert!(res.is_err());
+
+        cc.deposit(&1u64, &5000i128);
+        // Funded state
+        assert_eq!(cc.get_job(&1u64).status, EscrowStatus::Funded);
+        let res = cc.try_cleanup_job(&1u64, &client);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_cleanup_job_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let agent_judge = Address::generate(&env);
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+        let random = Address::generate(&env);
+
+        let token_addr = setup_token(&env, &admin);
+        mint(&env, &token_addr, &client);
+
+        let contract_id = env.register_contract(None, EscrowContract);
+        let cc = EscrowContractClient::new(&env, &contract_id);
+
+        cc.initialize(&admin, &agent_judge);
+        cc.create_job(&1u64, &client, &freelancer, &token_addr);
+        cc.add_milestone(&1u64, &5000i128);
+        cc.deposit(&1u64, &5000i128);
+        cc.release_milestone(&1u64, &client);
+        
+        // Random tries to cleanup
+        let res = cc.try_cleanup_job(&1u64, &random);
+        assert!(res.is_err());
     }
 }
