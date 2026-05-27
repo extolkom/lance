@@ -38,6 +38,54 @@ impl RoleMetrics {
     }
 }
 
+/// Badge tier awarded based on cumulative score thresholds.
+/// Scores are in basis points (0–10 000).
+///
+/// Thresholds:
+///   Bronze  ≥ 4 000
+///   Silver  ≥ 6 000
+///   Gold    ≥ 8 000
+///   Platinum ≥ 9 500
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BadgeLevel {
+    None,
+    Bronze,
+    Silver,
+    Gold,
+    Platinum,
+}
+
+impl BadgeLevel {
+    pub fn from_score(score: i32) -> Self {
+        match score {
+            s if s >= 9_500 => BadgeLevel::Platinum,
+            s if s >= 8_000 => BadgeLevel::Gold,
+            s if s >= 6_000 => BadgeLevel::Silver,
+            s if s >= 4_000 => BadgeLevel::Bronze,
+            _ => BadgeLevel::None,
+        }
+    }
+}
+
+/// Badge tiers keyed in the metadata map.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BadgeTier {
+    Bronze,
+    Silver,
+    Gold,
+    Platinum,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BadgeMetadataEntry {
+    pub tier: BadgeTier,
+    /// IPFS CID (or any URI) pointing to the badge image / JSON metadata.
+    pub uri: Bytes,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Profile {
@@ -48,6 +96,8 @@ pub struct Profile {
     pub metadata_hash: Option<Bytes>,
     /// unix timestamp of last activity that affected reputation (seconds)
     pub last_activity: u64,
+    /// Per-tier badge metadata URIs set by the admin.
+    pub badge_metadata: soroban_sdk::Vec<BadgeMetadataEntry>,
 }
 
 impl Profile {
@@ -59,6 +109,7 @@ impl Profile {
             is_blacklisted: false,
             metadata_hash: None,
             last_activity: 0,
+            badge_metadata: soroban_sdk::Vec::new(_env),
         }
     }
 }
