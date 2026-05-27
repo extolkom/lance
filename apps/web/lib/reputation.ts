@@ -28,7 +28,7 @@ export interface ReputationMetrics {
   reviews: number;
   starRating: number;
   averageStars: number;
-  badgeLevel: number;
+  badgeLevel?: number;
 }
 
 export interface ReputationViewMetrics {
