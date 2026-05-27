@@ -1600,11 +1600,12 @@ impl EscrowContract {
         job_id: u64,
         rescue_address: Address,
     ) -> Result<(), EscrowError> {
-        let admin: Address = env
+        let config: ContractConfig = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
+            .get(&DataKey::Config)
             .ok_or(EscrowError::NotInitialized)?;
+        let admin = config.admin;
         admin.require_auth();
 
         let key = DataKey::Job(job_id);
