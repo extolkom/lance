@@ -5,7 +5,7 @@ use soroban_sdk::{
     Address, Bytes, Env, Vec,
 };
 
-const MAX_HASH_LEN: u32 = 96;
+const MAX_CID_LEN: u32 = 96;
 
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -25,12 +25,16 @@ pub enum JobRegistryError {
     InvalidStateTransition = 12,
     NoDeliverable = 13,
     Overflow = 14,
+    BidIndexOutOfBounds = 15,
+    InvalidCollateral = 16,
+    NoRefund = 17,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum JobStatus {
     Open,
+    Assigned,
     InProgress,
     DeliverableSubmitted,
     Completed,
@@ -52,6 +56,7 @@ pub struct JobRecord {
 pub struct BidRecord {
     pub freelancer: Address,
     pub proposal_hash: Bytes,
+    pub collateral_stroops: i128,
 }
 
 #[contracttype]
@@ -59,7 +64,10 @@ pub enum DataKey {
     Admin,
     NextJobId,
     Job(u64),
-    Bids(u64),
+    BidCount(u64),
+    Bid(u64, u32),
+    BidIndex(u64, Address),
+    Refund(Address),
     Deliverable(u64),
 }
 
@@ -98,7 +106,7 @@ impl JobRegistryContract {
     }
 
     /// Client posts a job with explicit `job_id`.
-    /// `metadata_hash` is expected to contain CID bytes.
+    /// `metadata_hash` must contain compact IPFS CID bytes, not raw text.
     pub fn post_job(env: Env, job_id: u64, client: Address, hash: Bytes, budget: i128) {
         ensure_initialized(&env);
         validate_job_input(&env, job_id, &hash, budget);
@@ -154,45 +162,105 @@ impl JobRegistryContract {
         job_id
     }
 
-    /// Freelancer submits a bid.
+    /// Freelancer submits a bid with compact IPFS CID proposal metadata.
     pub fn submit_bid(env: Env, job_id: u64, freelancer: Address, proposal_hash: Bytes) {
+        submit_bid_with_collateral_internal(&env, job_id, freelancer, proposal_hash, 0i128);
+    }
+
+    /// Freelancer submits a bid with collateral tracked for later refund.
+    pub fn submit_bid_with_collateral(
+        env: Env,
+        job_id: u64,
+        freelancer: Address,
+        proposal_hash: Bytes,
+        collateral_stroops: i128,
+    ) {
+        submit_bid_with_collateral_internal(
+            &env,
+            job_id,
+            freelancer,
+            proposal_hash,
+            collateral_stroops,
+        );
+    }
+
+    /// Freelancer cancels an open bid and credits collateral for refund.
+    pub fn cancel_bid(env: Env, job_id: u64, freelancer: Address) -> i128 {
         ensure_initialized(&env);
-        validate_hash(&env, &proposal_hash);
         freelancer.require_auth();
 
-        let key = DataKey::Job(job_id);
-        let job: JobRecord = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| panic_with_error!(&env, JobRegistryError::JobNotFound));
-
+        let job = read_job(&env, job_id);
         if job.status != JobStatus::Open {
             panic_with_error!(&env, JobRegistryError::JobNotOpen);
         }
 
-        let bids_key = DataKey::Bids(job_id);
-        let mut bids: Vec<BidRecord> = env
+        let bidder_key = DataKey::BidIndex(job_id, freelancer.clone());
+        let bid_index: u32 = env
             .storage()
             .persistent()
-            .get(&bids_key)
-            .unwrap_or(Vec::new(&env));
+            .get(&bidder_key)
+            .unwrap_or_else(|| panic_with_error!(&env, JobRegistryError::BidNotFound));
+        let bid = read_bid_at(&env, job_id, bid_index);
+        let bid_count = read_bid_count(&env, job_id);
+        let last_index = bid_count
+            .checked_sub(1)
+            .unwrap_or_else(|| panic_with_error!(&env, JobRegistryError::BidIndexOutOfBounds));
 
-        for bid in bids.iter() {
-            if bid.freelancer == freelancer {
-                panic_with_error!(&env, JobRegistryError::BidAlreadySubmitted);
-            }
+        if bid_index != last_index {
+            let moved_bid = read_bid_at(&env, job_id, last_index);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Bid(job_id, bid_index), &moved_bid);
+            env.storage().persistent().set(
+                &DataKey::BidIndex(job_id, moved_bid.freelancer.clone()),
+                &bid_index,
+            );
         }
 
-        bids.push_back(BidRecord {
-            freelancer: freelancer.clone(),
-            proposal_hash,
-        });
-        env.storage().persistent().set(&bids_key, &bids);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Bid(job_id, last_index));
+        env.storage().persistent().remove(&bidder_key);
+        env.storage()
+            .persistent()
+            .set(&DataKey::BidCount(job_id), &last_index);
+        credit_refund(&env, freelancer.clone(), bid.collateral_stroops);
 
-        log!(&env, "submit_bid: id {} freelancer {}", job_id, freelancer);
+        log!(
+            &env,
+            "cancel_bid: id {} freelancer {} collateral {}",
+            job_id,
+            freelancer,
+            bid.collateral_stroops
+        );
         env.events()
-            .publish((symbol_short!("bid"), job_id), freelancer);
+            .publish((symbol_short!("bidcan"), job_id), (freelancer, bid.collateral_stroops));
+
+        bid.collateral_stroops
+    }
+
+    /// Freelancer claims accumulated collateral credited by cancelled bids.
+    pub fn claim_refund(env: Env, freelancer: Address) -> i128 {
+        ensure_initialized(&env);
+        freelancer.require_auth();
+
+        let key = DataKey::Refund(freelancer.clone());
+        let amount = read_refund_balance(&env, freelancer.clone());
+        if amount <= 0 {
+            panic_with_error!(&env, JobRegistryError::NoRefund);
+        }
+
+        env.storage().persistent().remove(&key);
+        log!(&env, "claim_refund: freelancer {} amount {}", freelancer, amount);
+        env.events()
+            .publish((symbol_short!("refund"),), (freelancer, amount));
+
+        amount
+    }
+
+    pub fn get_refund_balance(env: Env, freelancer: Address) -> i128 {
+        ensure_initialized(&env);
+        read_refund_balance(&env, freelancer)
     }
 
     /// Client accepts a bid, locking in the freelancer.
@@ -201,11 +269,7 @@ impl JobRegistryContract {
         client.require_auth();
 
         let key = DataKey::Job(job_id);
-        let mut job: JobRecord = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| panic_with_error!(&env, JobRegistryError::JobNotFound));
+        let mut job = read_job(&env, job_id);
 
         if job.status != JobStatus::Open {
             panic_with_error!(&env, JobRegistryError::JobNotOpen);
@@ -214,25 +278,16 @@ impl JobRegistryContract {
             panic_with_error!(&env, JobRegistryError::Unauthorized);
         }
 
-        let bids: Vec<BidRecord> = env
+        let selected_bid_index: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::Bids(job_id))
-            .unwrap_or(Vec::new(&env));
-
-        let mut found = false;
-        for bid in bids.iter() {
-            if bid.freelancer == freelancer {
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            panic_with_error!(&env, JobRegistryError::BidNotFound);
-        }
+            .get(&DataKey::BidIndex(job_id, freelancer.clone()))
+            .unwrap_or_else(|| panic_with_error!(&env, JobRegistryError::BidNotFound));
+        let selected_bid = read_bid_at(&env, job_id, selected_bid_index);
+        refund_losing_bids(&env, job_id, freelancer.clone(), selected_bid.clone());
 
         job.freelancer = Some(freelancer.clone());
-        job.status = JobStatus::InProgress;
+        job.status = JobStatus::Assigned;
         env.storage().persistent().set(&key, &job);
 
         log!(
@@ -246,20 +301,16 @@ impl JobRegistryContract {
             .publish((symbol_short!("accept"), job_id), freelancer);
     }
 
-    /// Freelancer submits deliverable IPFS hash.
+    /// Freelancer submits a deliverable CID.
     pub fn submit_deliverable(env: Env, job_id: u64, freelancer: Address, hash: Bytes) {
         ensure_initialized(&env);
-        validate_hash(&env, &hash);
+        validate_cid(&env, &hash);
         freelancer.require_auth();
 
         let key = DataKey::Job(job_id);
-        let mut job: JobRecord = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| panic_with_error!(&env, JobRegistryError::JobNotFound));
+        let mut job = read_job(&env, job_id);
 
-        if job.status != JobStatus::InProgress {
+        if job.status != JobStatus::Assigned && job.status != JobStatus::InProgress {
             panic_with_error!(&env, JobRegistryError::InvalidStateTransition);
         }
         if job.freelancer != Some(freelancer.clone()) {
@@ -289,13 +340,12 @@ impl JobRegistryContract {
         admin.require_auth();
 
         let key = DataKey::Job(job_id);
-        let mut job: JobRecord = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| panic_with_error!(&env, JobRegistryError::JobNotFound));
+        let mut job = read_job(&env, job_id);
 
-        if job.status != JobStatus::InProgress && job.status != JobStatus::DeliverableSubmitted {
+        if job.status != JobStatus::Assigned
+            && job.status != JobStatus::InProgress
+            && job.status != JobStatus::DeliverableSubmitted
+        {
             panic_with_error!(&env, JobRegistryError::InvalidStateTransition);
         }
 
@@ -308,18 +358,31 @@ impl JobRegistryContract {
 
     pub fn get_job(env: Env, job_id: u64) -> JobRecord {
         ensure_initialized(&env);
-        env.storage()
-            .persistent()
-            .get(&DataKey::Job(job_id))
-            .unwrap_or_else(|| panic_with_error!(&env, JobRegistryError::JobNotFound))
+        read_job(&env, job_id)
     }
 
     pub fn get_bids(env: Env, job_id: u64) -> Vec<BidRecord> {
         ensure_initialized(&env);
-        env.storage()
-            .persistent()
-            .get(&DataKey::Bids(job_id))
-            .unwrap_or(Vec::new(&env))
+        read_job(&env, job_id);
+
+        let bid_count = read_bid_count(&env, job_id);
+        let mut bids = Vec::new(&env);
+        let mut index = 0u32;
+        while index < bid_count {
+            bids.push_back(read_bid_at(&env, job_id, index));
+            index += 1;
+        }
+        bids
+    }
+
+    pub fn get_bid_at(env: Env, job_id: u64, index: u32) -> BidRecord {
+        ensure_initialized(&env);
+        read_job(&env, job_id);
+        let bid_count = read_bid_count(&env, job_id);
+        if index >= bid_count {
+            panic_with_error!(&env, JobRegistryError::BidIndexOutOfBounds);
+        }
+        read_bid_at(&env, job_id, index)
     }
 
     pub fn get_deliverable(env: Env, job_id: u64) -> Bytes {
@@ -360,14 +423,148 @@ fn validate_job_input(env: &Env, job_id: u64, hash: &Bytes, budget: i128) {
     if budget <= 0 {
         panic_with_error!(env, JobRegistryError::InvalidBudget);
     }
-    validate_hash(env, hash);
+    validate_cid(env, hash);
 }
 
-fn validate_hash(env: &Env, hash: &Bytes) {
-    let len = hash.len();
-    if len == 0 || len > MAX_HASH_LEN {
+fn validate_cid(env: &Env, cid: &Bytes) {
+    let len = cid.len();
+    if len == 0 || len > MAX_CID_LEN {
         panic_with_error!(env, JobRegistryError::InvalidHash);
     }
+}
+
+fn validate_collateral(env: &Env, collateral_stroops: i128) {
+    if collateral_stroops < 0 {
+        panic_with_error!(env, JobRegistryError::InvalidCollateral);
+    }
+}
+
+fn submit_bid_with_collateral_internal(
+    env: &Env,
+    job_id: u64,
+    freelancer: Address,
+    proposal_hash: Bytes,
+    collateral_stroops: i128,
+) {
+    ensure_initialized(env);
+    validate_cid(env, &proposal_hash);
+    validate_collateral(env, collateral_stroops);
+    freelancer.require_auth();
+
+    let job = read_job(env, job_id);
+    if job.status != JobStatus::Open {
+        panic_with_error!(env, JobRegistryError::JobNotOpen);
+    }
+
+    let bidder_key = DataKey::BidIndex(job_id, freelancer.clone());
+    if env.storage().persistent().has(&bidder_key) {
+        panic_with_error!(env, JobRegistryError::BidAlreadySubmitted);
+    }
+
+    let bid_count = read_bid_count(env, job_id);
+    let next_count = bid_count
+        .checked_add(1)
+        .unwrap_or_else(|| panic_with_error!(env, JobRegistryError::Overflow));
+    let bid = BidRecord {
+        freelancer: freelancer.clone(),
+        proposal_hash,
+        collateral_stroops,
+    };
+
+    // Store bid rows independently so duplicate checks, cancellation, and
+    // acceptance avoid deserializing an ever-growing bid vector on write paths.
+    env.storage()
+        .persistent()
+        .set(&DataKey::Bid(job_id, bid_count), &bid);
+    env.storage().persistent().set(&bidder_key, &bid_count);
+    env.storage()
+        .persistent()
+        .set(&DataKey::BidCount(job_id), &next_count);
+
+    log!(
+        env,
+        "submit_bid: id {} freelancer {} collateral {}",
+        job_id,
+        freelancer,
+        collateral_stroops
+    );
+    env.events()
+        .publish((symbol_short!("bid"), job_id), (freelancer, collateral_stroops));
+}
+
+fn read_refund_balance(env: &Env, freelancer: Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Refund(freelancer))
+        .unwrap_or(0i128)
+}
+
+fn credit_refund(env: &Env, freelancer: Address, amount: i128) {
+    if amount == 0 {
+        return;
+    }
+
+    let current = read_refund_balance(env, freelancer.clone());
+    let updated = current
+        .checked_add(amount)
+        .unwrap_or_else(|| panic_with_error!(env, JobRegistryError::Overflow));
+    env.storage()
+        .persistent()
+        .set(&DataKey::Refund(freelancer), &updated);
+}
+
+fn refund_losing_bids(
+    env: &Env,
+    job_id: u64,
+    accepted_freelancer: Address,
+    accepted_bid: BidRecord,
+) {
+    let bid_count = read_bid_count(env, job_id);
+    let mut index = 0u32;
+    while index < bid_count {
+        let bid = read_bid_at(env, job_id, index);
+        if bid.freelancer != accepted_freelancer {
+            credit_refund(env, bid.freelancer.clone(), bid.collateral_stroops);
+            env.storage()
+                .persistent()
+                .remove(&DataKey::BidIndex(job_id, bid.freelancer));
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Bid(job_id, index));
+        index += 1;
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Bid(job_id, 0u32), &accepted_bid);
+    env.storage()
+        .persistent()
+        .set(&DataKey::BidIndex(job_id, accepted_freelancer), &0u32);
+    env.storage()
+        .persistent()
+        .set(&DataKey::BidCount(job_id), &1u32);
+}
+
+fn read_job(env: &Env, job_id: u64) -> JobRecord {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Job(job_id))
+        .unwrap_or_else(|| panic_with_error!(env, JobRegistryError::JobNotFound))
+}
+
+fn read_bid_count(env: &Env, job_id: u64) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::BidCount(job_id))
+        .unwrap_or(0u32)
+}
+
+fn read_bid_at(env: &Env, job_id: u64, index: u32) -> BidRecord {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Bid(job_id, index))
+        .unwrap_or_else(|| panic_with_error!(env, JobRegistryError::BidIndexOutOfBounds))
 }
 
 fn post_job_with_id(env: &Env, job_id: u64, client: Address, hash: Bytes, budget: i128) {
@@ -385,10 +582,9 @@ fn post_job_with_id(env: &Env, job_id: u64, client: Address, hash: Bytes, budget
     };
     env.storage().persistent().set(&key, &job);
 
-    let bids: Vec<BidRecord> = Vec::new(env);
     env.storage()
         .persistent()
-        .set(&DataKey::Bids(job_id), &bids);
+        .set(&DataKey::BidCount(job_id), &0u32);
 }
 
 #[cfg(test)]
@@ -512,7 +708,7 @@ mod test {
 
         cc.accept_bid(&1u64, &client, &freelancer);
         let job = cc.get_job(&1u64);
-        assert_eq!(job.status, JobStatus::InProgress);
+        assert_eq!(job.status, JobStatus::Assigned);
         assert_eq!(job.freelancer, Some(freelancer.clone()));
 
         let deliverable = Bytes::from_slice(&env, b"QmDeliverableHash");
@@ -537,6 +733,204 @@ mod test {
         let proposal = Bytes::from_slice(&env, b"QmProposal");
         cc.submit_bid(&1u64, &freelancer, &proposal);
         cc.submit_bid(&1u64, &freelancer, &proposal);
+    }
+
+    #[test]
+    fn test_get_bid_at_reads_indexed_bid_rows() {
+        let (env, cc, admin, client, freelancer) = setup();
+        let second_freelancer = Address::generate(&env);
+        cc.initialize(&admin);
+
+        let hash = Bytes::from_slice(&env, b"bafyJobCid");
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+
+        let proposal_one = Bytes::from_slice(&env, b"bafyProposalOne");
+        let proposal_two = Bytes::from_slice(&env, b"bafyProposalTwo");
+        cc.submit_bid(&1u64, &freelancer, &proposal_one);
+        cc.submit_bid(&1u64, &second_freelancer, &proposal_two);
+
+        let first = cc.get_bid_at(&1u64, &0u32);
+        let second = cc.get_bid_at(&1u64, &1u32);
+        assert_eq!(first.freelancer, freelancer);
+        assert_eq!(first.proposal_hash, proposal_one);
+        assert_eq!(second.freelancer, second_freelancer);
+        assert_eq!(second.proposal_hash, proposal_two);
+
+        let bids = cc.get_bids(&1u64);
+        assert_eq!(bids.len(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #15)")]
+    fn test_get_bid_at_out_of_bounds_returns_specific_error() {
+        let (env, cc, admin, client, _) = setup();
+        cc.initialize(&admin);
+
+        let hash = Bytes::from_slice(&env, b"bafyJobCid");
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+
+        cc.get_bid_at(&1u64, &0u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #5)")]
+    fn test_rejects_oversized_metadata_cid() {
+        let (env, cc, admin, client, _) = setup();
+        cc.initialize(&admin);
+
+        let oversized = Bytes::from_slice(
+            &env,
+            b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        cc.post_job(&1u64, &client, &oversized, &5000i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #8)")]
+    fn test_late_bid_after_assignment_returns_specific_error() {
+        let (env, cc, admin, client, freelancer) = setup();
+        let late_freelancer = Address::generate(&env);
+        cc.initialize(&admin);
+
+        let hash = Bytes::from_slice(&env, b"bafyJobCid");
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+
+        let proposal = Bytes::from_slice(&env, b"bafyProposal");
+        cc.submit_bid(&1u64, &freelancer, &proposal);
+        cc.accept_bid(&1u64, &client, &freelancer);
+
+        let late_proposal = Bytes::from_slice(&env, b"bafyLateProposal");
+        cc.submit_bid(&1u64, &late_freelancer, &late_proposal);
+    }
+
+    #[test]
+    fn test_cancel_bid_refunds_collateral_and_compacts_indices() {
+        let (env, cc, admin, client, freelancer) = setup();
+        let second_freelancer = Address::generate(&env);
+        let third_freelancer = Address::generate(&env);
+        cc.initialize(&admin);
+
+        let hash = Bytes::from_slice(&env, b"bafyJobCid");
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+
+        let proposal_one = Bytes::from_slice(&env, b"bafyProposalOne");
+        let proposal_two = Bytes::from_slice(&env, b"bafyProposalTwo");
+        let proposal_three = Bytes::from_slice(&env, b"bafyProposalThree");
+        cc.submit_bid_with_collateral(&1u64, &freelancer, &proposal_one, &100i128);
+        cc.submit_bid_with_collateral(&1u64, &second_freelancer, &proposal_two, &250i128);
+        cc.submit_bid_with_collateral(&1u64, &third_freelancer, &proposal_three, &300i128);
+
+        let refunded = cc.cancel_bid(&1u64, &second_freelancer);
+        assert_eq!(refunded, 250i128);
+        assert_eq!(cc.get_refund_balance(&second_freelancer), 250i128);
+
+        let bids = cc.get_bids(&1u64);
+        assert_eq!(bids.len(), 2);
+        assert_eq!(cc.get_bid_at(&1u64, &0u32).freelancer, freelancer);
+        assert_eq!(
+            cc.get_bid_at(&1u64, &1u32).freelancer,
+            third_freelancer.clone()
+        );
+
+        cc.accept_bid(&1u64, &client, &third_freelancer);
+        let job = cc.get_job(&1u64);
+        assert_eq!(job.status, JobStatus::Assigned);
+        assert_eq!(job.freelancer, Some(third_freelancer));
+    }
+
+    #[test]
+    fn test_claim_refund_clears_balance() {
+        let (env, cc, admin, client, freelancer) = setup();
+        cc.initialize(&admin);
+
+        let hash = Bytes::from_slice(&env, b"bafyJobCid");
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+
+        let proposal = Bytes::from_slice(&env, b"bafyProposal");
+        cc.submit_bid_with_collateral(&1u64, &freelancer, &proposal, &125i128);
+        cc.cancel_bid(&1u64, &freelancer);
+
+        assert_eq!(cc.claim_refund(&freelancer), 125i128);
+        assert_eq!(cc.get_refund_balance(&freelancer), 0i128);
+    }
+
+    #[test]
+    fn test_accept_bid_refunds_losing_bid_collateral() {
+        let (env, cc, admin, client, freelancer) = setup();
+        let winning_freelancer = Address::generate(&env);
+        cc.initialize(&admin);
+
+        let hash = Bytes::from_slice(&env, b"bafyJobCid");
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+
+        let losing_proposal = Bytes::from_slice(&env, b"bafyLosingProposal");
+        let winning_proposal = Bytes::from_slice(&env, b"bafyWinningProposal");
+        cc.submit_bid_with_collateral(&1u64, &freelancer, &losing_proposal, &100i128);
+        cc.submit_bid_with_collateral(
+            &1u64,
+            &winning_freelancer,
+            &winning_proposal,
+            &250i128,
+        );
+
+        cc.accept_bid(&1u64, &client, &winning_freelancer);
+
+        assert_eq!(cc.get_refund_balance(&freelancer), 100i128);
+        assert_eq!(cc.get_refund_balance(&winning_freelancer), 0i128);
+        assert_eq!(cc.get_bids(&1u64).len(), 1);
+        assert_eq!(
+            cc.get_bid_at(&1u64, &0u32).freelancer,
+            winning_freelancer
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #11)")]
+    fn test_cancel_bid_requires_existing_bid() {
+        let (env, cc, admin, client, freelancer) = setup();
+        cc.initialize(&admin);
+
+        let hash = Bytes::from_slice(&env, b"bafyJobCid");
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+
+        cc.cancel_bid(&1u64, &freelancer);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #8)")]
+    fn test_cancel_bid_after_assignment_returns_specific_error() {
+        let (env, cc, admin, client, freelancer) = setup();
+        cc.initialize(&admin);
+
+        let hash = Bytes::from_slice(&env, b"bafyJobCid");
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+
+        let proposal = Bytes::from_slice(&env, b"bafyProposal");
+        cc.submit_bid_with_collateral(&1u64, &freelancer, &proposal, &125i128);
+        cc.accept_bid(&1u64, &client, &freelancer);
+        cc.cancel_bid(&1u64, &freelancer);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #16)")]
+    fn test_submit_bid_rejects_negative_collateral() {
+        let (env, cc, admin, client, freelancer) = setup();
+        cc.initialize(&admin);
+
+        let hash = Bytes::from_slice(&env, b"bafyJobCid");
+        cc.post_job(&1u64, &client, &hash, &5000i128);
+
+        let proposal = Bytes::from_slice(&env, b"bafyProposal");
+        cc.submit_bid_with_collateral(&1u64, &freelancer, &proposal, &-1i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #17)")]
+    fn test_claim_refund_requires_balance() {
+        let (_env, cc, admin, _, freelancer) = setup();
+        cc.initialize(&admin);
+
+        cc.claim_refund(&freelancer);
     }
 
     #[test]
