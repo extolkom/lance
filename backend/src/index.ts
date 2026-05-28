@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import { prisma, connectWithRetry, startPoolHealthCheck } from "./config/db";
 import { trace } from "./config/tracing";
 import { intakeRateLimit } from "./middleware/intakeRateLimit";
+import { sqlInjectionGuard } from "./middleware/sanitize";
 import { tracingMiddleware } from "./utils/tracing";
 import { metricsMiddleware } from "./middleware/metrics";
 import { createMetricsRouter, updatePoolMetrics } from "./utils/metrics";
@@ -31,6 +32,9 @@ app.use(express.json());
 app.use(tracingMiddleware); // Global request tracing and diagnostics
 app.use(intakeRateLimit);
 app.use(metricsMiddleware);
+
+// SQL injection protection — inspects query params and body for injection patterns
+app.use(sqlInjectionGuard);
 
 // Request logging middleware with tracing
 app.use((req: Request, res: Response, next) => {
