@@ -1,4 +1,4 @@
-﻿#![no_std]
+#![no_std]
 
 use soroban_sdk::BytesN;
 use soroban_sdk::{
@@ -879,6 +879,8 @@ impl EscrowContract {
             job_id,
             milestone.amount
         );
+
+        Ok(())
     }
 
     /// Either party opens a dispute, locking remaining funds.
@@ -1068,6 +1070,8 @@ impl EscrowContract {
             payee_amount,
             payer_amount
         );
+
+        Ok(())
     }
 
     /// Client recoups funds if freelancer never responded or deadline has passed.
@@ -1624,7 +1628,7 @@ impl EscrowContract {
             return Err(EscrowError::NothingToSweep);
         }
 
-        enter_reentrancy_guard(&env);
+        let _guard = enter_reentrancy_guard(&env);
 
         // Override the state machine: mark fully released and refunded.
         job.released_amount = job.total_amount;
@@ -1635,8 +1639,6 @@ impl EscrowContract {
 
         env.storage().persistent().set(&key, &job);
         Self::bump_job_ttl(&env, &key);
-
-        exit_reentrancy_guard(&env);
 
         env.events().publish(
             ("escrow", "EmergencySweep"),
