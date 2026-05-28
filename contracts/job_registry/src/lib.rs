@@ -1,10 +1,11 @@
-﻿#![no_std]
+#![no_std]
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, log, panic_with_error, symbol_short,
     token, Address, Bytes, Env, Vec,
 };
 
+#[allow(dead_code)]
 const MAX_HASH_LEN: u32 = 96;
 
 // Requirement [SC-REG-037]: Contract-wide budget floor and ceiling enforced at input validation.
