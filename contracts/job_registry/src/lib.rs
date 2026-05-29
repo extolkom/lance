@@ -17,16 +17,16 @@ pub enum JobStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     Admin,
-    ClientVerified(Address), // Tracks identity verification constraints for clients
-    JobConfig(u64),          // Maps Job ID to JobConfig parameters
-    JobBids(u64),            // Maps Job ID to a Vector of submitted Bids
+    ClientVerified(Address),
+    JobConfig(u64),
+    JobBids(u64),
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JobConfig {
     pub creator: Address,
-    pub ipfs_cid: Bytes,       // Compressed project text parameters (IPFS Hash)
+    pub ipfs_cid: Bytes,
     pub budget: i128,
     pub status: JobStatus,
     pub freelancer: Option<Address>,
@@ -41,14 +41,14 @@ pub struct Bid {
 }
 
 /* -----------------------------------------------------------------
-   2. Explicit Event Schemas for Indexer & Verification Sync
+   2. Explicit Event Schemas for Indexer & Storage Sync
 ----------------------------------------------------------------- */
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ClientVerificationEvent {
-    pub client: Address,
-    pub is_verified: bool,
+pub struct JobStorageReclaimedEvent {
+    pub job_id: u64,
+    pub reclaimer: Address,
 }
 
 #[contracttype]
@@ -58,14 +58,6 @@ pub struct JobCreatedIndexEvent {
     pub creator: Address,
     pub ipfs_cid: Bytes,
     pub budget: i128,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BidPlacedIndexEvent {
-    pub job_id: u64,
-    pub bidder: Address,
-    pub amount: i128,
 }
 
 #[contracttype]
@@ -86,7 +78,6 @@ pub struct LanceJobRegistryContract;
 #[contractimpl]
 impl LanceJobRegistryContract {
 
-    /// Initializes contract layout control patterns.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("Registry already initialized");
@@ -94,37 +85,27 @@ impl LanceJobRegistryContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
-    /// Admin administrative capability to explicitly verify client identity status metrics.
     pub fn set_client_verification(env: Env, client: Address, status: bool) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Registry uninitialized");
         admin.require_auth();
-
-        env.storage().persistent().set(&DataKey::ClientVerified(client.clone()), &status);
-
-        env.events().publish(
-            (Symbol::new(&env, "client_verified"), client.clone()),
-            ClientVerificationEvent { client, is_verified: status },
-        );
+        env.storage().persistent().set(&DataKey::ClientVerified(client), &status);
     }
 
-    /// Post a new job posting entry after verifying strict client identity constraints.
+    /// Post a new job posting entry using a compact IPFS CID.
     pub fn post_job(env: Env, job_id: u64, creator: Address, ipfs_cid: Bytes, budget: i128) {
         creator.require_auth();
 
-        // Enforce Identity Validation Constraints
         let verification_key = DataKey::ClientVerified(creator.clone());
         let is_verified = env.storage().persistent().get(&verification_key).unwrap_or(false);
         if !is_verified {
-            panic!("Identity constraint violation: Client profile must be fully verified to post jobs");
+            panic!("Identity constraint violation: Client profile must be verified");
         }
 
         if budget <= 0 {
             panic!("Budget parameters must be positive value");
         }
-        
-        // Enforce basic IPFS hash length sanity boundary checking
         if ipfs_cid.len() < 32 {
-            panic!("Invalid IPFS Content Identifier bounds provided");
+            panic!("Invalid IPFS Content Identifier bounds");
         }
 
         let job_key = DataKey::JobConfig(job_id);
@@ -152,53 +133,22 @@ impl LanceJobRegistryContract {
         );
     }
 
-    /// Places a bid securely mapped to a specific job ID configuration entry.
-    pub fn place_bid(env: Env, job_id: u64, bidder: Address, amount: i128) {
-        bidder.require_auth();
-
-        let job_key = DataKey::JobConfig(job_id);
-        let job: JobConfig = env.storage().persistent().get(&job_key).expect("Target job registry context not found");
-
-        if job.status != JobStatus::AwaitingFunding {
-            panic!("Late submission error: Job no longer accepting active proposals");
-        }
-        if amount <= 0 {
-            panic!("Bid valuation parameters must be a valid positive amount");
-        }
-
-        let bids_key = DataKey::JobBids(job_id);
-        let mut bids: Vec<Bid> = env.storage().persistent().get(&bids_key).unwrap_or(Vec::new(&env));
-
-        let new_bid = Bid {
-            bidder: bidder.clone(),
-            amount,
-            timestamp: env.ledger().timestamp(),
-        };
-        bids.push_back(new_bid);
-        env.storage().persistent().set(&bids_key, &bids);
-
-        env.events().publish(
-            (Symbol::new(&env, "bid_placed"), job_id),
-            BidPlacedIndexEvent { job_id, bidder, amount },
-        );
-    }
-
-    /// Accepts a proposal. Strictly enforces ownership boundaries.
+    /// Accepts a proposal. Automatically transitions state machine parameters to 'Assigned'.
     pub fn accept_bid(env: Env, job_id: u64, bid_index: u32) {
         let job_key = DataKey::JobConfig(job_id);
-        let mut job: JobConfig = env.storage().persistent().get(&job_key).expect("Target job registry context not found");
+        let mut job: JobConfig = env.storage().persistent().get(&job_key).expect("Job context not found");
 
         job.creator.require_auth();
 
         if job.status != JobStatus::AwaitingFunding {
-            panic!("Invalid operational request sequence: Job state already locked or assigned");
+            panic!("Job state already locked or assigned");
         }
 
         let bids_key = DataKey::JobBids(job_id);
-        let bids: Vec<Bid> = env.storage().persistent().get(&bids_key).expect("Bids collection store missing");
+        let bids: Vec<Bid> = env.storage().persistent().get(&bids_key).expect("Bids store missing");
 
         if bid_index >= bids.len() {
-            panic!("Out-of-bounds input error: Selected bid target index does not exist");
+            panic!("Out-of-bounds input error: Selected bid index does not exist");
         }
 
         let chosen_bid = bids.get(bid_index).unwrap();
@@ -218,19 +168,55 @@ impl LanceJobRegistryContract {
         );
     }
 
+    /// Admin or Creator capability to mark a finalized job as completed.
+    pub fn complete_job(env: Env, job_id: u64) {
+        let job_key = DataKey::JobConfig(job_id);
+        let mut job: JobConfig = env.storage().persistent().get(&job_key).expect("Job context not found");
+        
+        job.creator.require_auth();
+
+        if job.status != JobStatus::Assigned {
+            panic!("Only active assigned jobs can be closed or completed");
+        }
+
+        job.status = JobStatus::Completed;
+        env.storage().persistent().set(&job_key, &job);
+    }
+
+    /// Explicit Storage Reclamation System.
+    /// Permanently expunges closed/completed postings to free storage keys and reclaim rent allocations.
+    pub fn reclaim_job_storage(env: Env, job_id: u64, reclaimer: Address) {
+        reclaimer.require_auth();
+
+        let job_key = DataKey::JobConfig(job_id);
+        let job: JobConfig = env.storage().persistent().get(&job_key).expect("Job context not found");
+
+        // Safety enforcement verification boundaries
+        if job.status != JobStatus::Completed {
+            panic!("Storage optimization block: Only completed jobs can have their footprints reclaimed");
+        }
+        if reclaimer != job.creator {
+            panic!("Unauthorized: Only the initial job creator can invoke storage reclamation");
+        }
+
+        let bids_key = DataKey::JobBids(job_id);
+
+        // Safely purge persistent keys completely from storage ledger allocation tables
+        env.storage().persistent().remove(&job_key);
+        env.storage().persistent().remove(&bids_key);
+
+        // Emit indexer synchronization notification event
+        env.events().publish(
+            (Symbol::new(&env, "job_storage_reclaimed"), job_id),
+            JobStorageReclaimedEvent { job_id, reclaimer },
+        );
+    }
+
     /* -----------------------------------------------------------------
        Public Getters
     ----------------------------------------------------------------- */
 
     pub fn get_job(env: Env, job_id: u64) -> Option<JobConfig> {
         env.storage().persistent().get(&DataKey::JobConfig(job_id))
-    }
-
-    pub fn get_bids(env: Env, job_id: u64) -> Vec<Bid> {
-        env.storage().persistent().get(&DataKey::JobBids(job_id)).unwrap_or(Vec::new(&env))
-    }
-
-    pub fn is_client_verified(env: Env, client: Address) -> bool {
-        env.storage().persistent().get(&DataKey::ClientVerified(client)).unwrap_or(false)
     }
 }
